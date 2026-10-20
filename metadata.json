@@ -1,0 +1,6 @@
+{
+  "name": "Employee Record, DTR & Payroll System",
+  "description": "Comprehensive Human Resource Information System (HRIS) with employee records, biometric DTR attendance tracking, automated Philippine payroll processing, role-based access control (Admin, Manager, Staff), and complete edit audit trail logging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

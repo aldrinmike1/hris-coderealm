@@ -1,0 +1,117 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #F1F5F9;
+    color: #0f172a;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Custom compact scrollbar for high density tables */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #f1f5f9;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
+}
+
+/* ==========================================================================
+   PRINT STYLESHEET
+   Handles clean printing of payslips, ID badges, DTR sheets, and reports.
+   ========================================================================== */
+@media print {
+  @page {
+    size: letter portrait;
+    margin: 10mm 15mm;
+  }
+
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    height: auto !important;
+    min-height: 100% !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Hide app navigation, headers, backdrop overlays, and non-printable elements */
+  nav,
+  header,
+  aside,
+  footer,
+  #navbar,
+  .no-print,
+  button:not(.allow-print) {
+    display: none !important;
+  }
+
+  /* Reset modal containers when printing */
+  .fixed.inset-0 {
+    position: static !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  #payslip-detail-modal,
+  #employee-id-badge-modal {
+    box-shadow: none !important;
+    border: none !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+    background: transparent !important;
+  }
+
+  /* Ensure the printable payslip content expands cleanly */
+  #printable-payslip-sheet {
+    position: static !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 auto !important;
+    width: 100% !important;
+    display: block !important;
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 8px !important;
+  }
+
+  #printable-company-id,
+  #printable-id-card {
+    position: static !important;
+    margin: 20px auto !important;
+    display: block !important;
+    box-shadow: none !important;
+  }
+
+  #printable-dtr-summary {
+    position: static !important;
+    max-height: none !important;
+    overflow: visible !important;
+    width: 100% !important;
+    display: block !important;
+  }
+}
