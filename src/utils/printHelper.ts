@@ -67,10 +67,6 @@ export function generateCompactPayslipTableHtml(
     payslip.cashAdvanceDeduction && payslip.cashAdvanceDeduction > 0
       ? payslip.cashAdvanceDeduction.toFixed(2)
       : '';
-  let mls =
-    payslip.mlsDeduction && payslip.mlsDeduction > 0
-      ? payslip.mlsDeduction.toFixed(2)
-      : '';
   let otherDedsTotal = 0;
 
   if (payslip.otherDeductions && payslip.otherDeductions.length > 0) {
@@ -87,8 +83,6 @@ export function generateCompactPayslipTableHtml(
         hdmfLoan = (current + d.amount).toFixed(2);
       } else if (nameLower.includes('cash advance') || nameLower.includes('vale')) {
         if (!cashAdvance) cashAdvance = d.amount.toFixed(2);
-      } else if (nameLower.includes('mls')) {
-        if (!mls) mls = d.amount.toFixed(2);
       } else {
         otherDedsTotal += d.amount;
       }
@@ -305,12 +299,6 @@ export function generateCompactPayslipTableHtml(
             <td class="text-right underline-cell">${others}</td>
           </tr>
 
-          <!-- MLS (Empty amount underline) -->
-          <tr>
-            <td class="label-right">MLS</td>
-            <td class="text-center"></td>
-            <td class="text-right underline-cell">${mls}</td>
-          </tr>
 
           <!-- Total Deductions (Thick border top & bottom, no vertical divider) -->
           <tr class="bold border-t-thick border-b-thick">

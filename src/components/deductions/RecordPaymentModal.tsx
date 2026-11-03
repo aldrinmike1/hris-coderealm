@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { EmployeeDeduction, Payslip } from '../../types';
-import { X, DollarSign, Calendar, CreditCard, CheckCircle2, FileText, Link2 } from 'lucide-react';
+import { EmployeeDeduction } from '../../types';
+import { X, Calendar, CreditCard } from 'lucide-react';
 
 interface RecordPaymentModalProps {
   isOpen: boolean;
@@ -18,24 +18,14 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
   preselectedDeductionId,
   employeeName,
 }) => {
-  const { recordDeductionPayment, payslips, payPeriods, showToast } = useApp();
+  const { recordDeductionPayment, showToast } = useApp();
 
   const [selectedDeductionId, setSelectedDeductionId] = useState<string>('');
-  const [paymentMode, setPaymentMode] = useState<'MANUAL' | 'PAYSLIP'>('MANUAL');
   const [amount, setAmount] = useState<string>('');
   const [date, setDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [reference, setReference] = useState<string>('');
-  const [description, setDescription] = useState<string>('Over-the-counter Cash Payment');
   const [remarks, setRemarks] = useState<string>('');
-  const [selectedPayslipId, setSelectedPayslipId] = useState<string>('');
 
   const currentDeduction = deductions.find(d => d.id === selectedDeductionId);
-
-  // Available payslips for this employee
-  const employeePayslips = React.useMemo(() => {
-    if (!currentDeduction) return [];
-    return payslips.filter(ps => ps.employeeId === currentDeduction.employeeId);
-  }, [currentDeduction, payslips]);
 
   useEffect(() => {
     if (isOpen) {
@@ -49,11 +39,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
 
       setSelectedDeductionId(chosen);
       setDate(new Date().toISOString().split('T')[0]);
-      setPaymentMode('MANUAL');
-      setDescription('Over-the-counter Cash Payment');
-      setReference(`OR-${Math.floor(100000 + Math.random() * 900000)}`);
       setRemarks('');
-      setSelectedPayslipId('');
 
       const activeDed = activeList.find(d => d.id === chosen);
       if (activeDed) {
@@ -76,19 +62,6 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     const ded = deductions.find(d => d.id === id);
     if (ded) {
       setAmount(Math.min(ded.cutoffDeductionAmount, ded.runningBalance).toString());
-    }
-  };
-
-  const handleSelectPayslip = (psId: string) => {
-    setSelectedPayslipId(psId);
-    const ps = employeePayslips.find(p => p.id === psId);
-    if (ps) {
-      const period = payPeriods.find(p => p.id === ps.payPeriodId);
-      setDescription(`Payroll Cutoff Deduction (${period?.name || ps.payPeriodId})`);
-      setReference(period?.id || ps.id);
-      if (period?.payoutDate) {
-        setDate(period.payoutDate);
-      }
     }
   };
 
@@ -116,19 +89,14 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
       return;
     }
 
-    const isConnectedToPayslip = paymentMode === 'PAYSLIP' || !!selectedPayslipId;
-    const chosenPayslip = employeePayslips.find(ps => ps.id === selectedPayslipId);
-
     recordDeductionPayment(selectedDeductionId, {
       amount: numAmount,
       date,
-      reference: reference.trim() || undefined,
-      description: description.trim() || undefined,
+      reference: undefined,
+      description: remarks.trim() || 'Manual Payment',
       remarks: remarks.trim() || undefined,
-      type: isConnectedToPayslip ? 'CUTOFF_DEDUCTION' : 'PAYMENT',
-      payslipId: selectedPayslipId || undefined,
-      payPeriodId: chosenPayslip?.payPeriodId || undefined,
-      isManual: !isConnectedToPayslip,
+      type: 'PAYMENT',
+      isManual: true,
     });
 
     onClose();
@@ -201,140 +169,66 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
             </div>
           )}
 
-          {/* Payment Mode Selector */}
-          <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-              Payment Source / Type
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setPaymentMode('MANUAL');
-                  setDescription('Over-the-counter Cash Payment');
-                  setReference(`OR-${Math.floor(100000 + Math.random() * 900000)}`);
-                  setSelectedPayslipId('');
-                }}
-                className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  paymentMode === 'MANUAL'
-                    ? 'border-emerald-600 bg-emerald-50 text-emerald-800 shadow-2xs'
-                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <CreditCard className="w-3.5 h-3.5" />
-                <span>Manual Payment</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setPaymentMode('PAYSLIP');
-                  if (employeePayslips.length > 0) {
-                    handleSelectPayslip(employeePayslips[0].id);
-                  }
-                }}
-                className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  paymentMode === 'PAYSLIP'
-                    ? 'border-blue-600 bg-blue-50 text-blue-800 shadow-2xs'
-                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <FileText className="w-3.5 h-3.5" />
-                <span>Connect to Payslip</span>
-              </button>
-            </div>
-          </div>
-
-          {/* If Connected to Payslip: Dropdown of employee's payslips */}
-          {paymentMode === 'PAYSLIP' && (
-            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl space-y-2 text-xs">
-              <label className="block text-xs font-bold text-blue-900 uppercase tracking-wider">
-                Select Employee Payslip <span className="text-rose-500">*</span>
-              </label>
-              {employeePayslips.length === 0 ? (
-                <div className="text-slate-500 text-xs italic">
-                  No generated payslips found for this employee yet. Generate payroll in Weekly Cutoffs first or record as manual payment.
-                </div>
-              ) : (
-                <select
-                  value={selectedPayslipId}
-                  onChange={e => handleSelectPayslip(e.target.value)}
+          {/* Payment Amount & Date Grid (2:1 ratio) */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+            {/* Payment Amount (Larger: 2 columns) */}
+            <div className="sm:col-span-2">
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider truncate">
+                  Payment Amount (₱) <span className="text-rose-500">*</span>
+                </label>
+                {currentDeduction && (
+                  <div className="flex items-center gap-1.5 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() => handleApplyPreset('cutoff')}
+                      className="text-emerald-700 hover:text-emerald-900 font-semibold underline cursor-pointer"
+                    >
+                      1 Cutoff (₱{currentDeduction.cutoffDeductionAmount.toLocaleString()})
+                    </button>
+                    <span>•</span>
+                    <button
+                      type="button"
+                      onClick={() => handleApplyPreset('full')}
+                      className="text-emerald-700 hover:text-emerald-900 font-semibold underline cursor-pointer"
+                    >
+                      Pay in Full
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="relative">
+                <span className="absolute left-3 top-2 text-slate-400 font-bold text-xs">₱</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  max={currentDeduction?.runningBalance}
+                  value={amount}
+                  onChange={e => setAmount(e.target.value)}
                   required
-                  className="w-full px-3 py-2 bg-white border border-blue-300 rounded-xl text-xs font-medium text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
-                >
-                  <option value="">-- Choose generated cutoff payslip --</option>
-                  {employeePayslips.map(ps => {
-                    const period = payPeriods.find(p => p.id === ps.payPeriodId);
-                    return (
-                      <option key={ps.id} value={ps.id}>
-                        {period?.name || ps.payPeriodId} • Net: ₱{ps.netPay.toLocaleString()} ({ps.id})
-                      </option>
-                    );
-                  })}
-                </select>
-              )}
-              <p className="text-[11px] text-blue-700">
-                Connecting this payment to a payslip allows one-click inspection via the "View Payslip" button in Payment Records.
-              </p>
-            </div>
-          )}
-
-          {/* Payment Amount */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                Payment Amount (₱) <span className="text-rose-500">*</span>
-              </label>
-              {currentDeduction && (
-                <div className="flex items-center gap-1.5 text-[10px]">
-                  <button
-                    type="button"
-                    onClick={() => handleApplyPreset('cutoff')}
-                    className="text-emerald-700 hover:text-emerald-900 font-semibold underline cursor-pointer"
-                  >
-                    1 Cutoff (₱{currentDeduction.cutoffDeductionAmount.toLocaleString()})
-                  </button>
-                  <span>•</span>
-                  <button
-                    type="button"
-                    onClick={() => handleApplyPreset('full')}
-                    className="text-emerald-700 hover:text-emerald-900 font-semibold underline cursor-pointer"
-                  >
-                    Pay in Full
-                  </button>
-                </div>
+                  placeholder="0.00"
+                  className="w-full pl-7 pr-3 py-2 border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                />
+              </div>
+              {currentDeduction && numAmount > 0 && (
+                <p className="text-[11px] text-slate-500 mt-1 flex items-center justify-between font-mono">
+                  <span>New Running Balance:</span>
+                  <span className="font-bold text-slate-800">
+                    ₱{remainingAfterPayment.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    {remainingAfterPayment === 0 && ' (Fully Settled ✓)'}
+                  </span>
+                </p>
               )}
             </div>
-            <div className="relative">
-              <span className="absolute left-3 top-2 text-slate-400 font-bold text-xs">₱</span>
-              <input
-                type="number"
-                step="0.01"
-                min="0.01"
-                max={currentDeduction?.runningBalance}
-                value={amount}
-                onChange={e => setAmount(e.target.value)}
-                required
-                className="w-full pl-7 pr-3 py-2 border border-slate-300 rounded-xl text-xs font-black text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
-              />
-            </div>
-            {currentDeduction && numAmount > 0 && (
-              <p className="text-[11px] text-slate-500 mt-1 flex items-center justify-between font-mono">
-                <span>New Running Balance:</span>
-                <span className="font-bold text-slate-800">
-                  ₱{remainingAfterPayment.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                  {remainingAfterPayment === 0 && ' (Fully Settled ✓)'}
-                </span>
-              </p>
-            )}
-          </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            {/* Payment Date */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                Date <span className="text-rose-500">*</span>
-              </label>
+            {/* Payment Date (Shorter: 1 column) */}
+            <div className="sm:col-span-1">
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Date <span className="text-rose-500">*</span>
+                </label>
+              </div>
               <input
                 type="date"
                 value={date}
@@ -343,32 +237,18 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                 className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
               />
             </div>
-
-            {/* Reference Number */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                Reference / Receipt #
-              </label>
-              <input
-                type="text"
-                value={reference}
-                onChange={e => setReference(e.target.value)}
-                placeholder="e.g. OR-892144"
-                className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
-              />
-            </div>
           </div>
 
-          {/* Description */}
+          {/* Remarks (Optional) */}
           <div>
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-              Remarks & Description
+              Remarks <span className="text-slate-400 font-normal lowercase">(optional)</span>
             </label>
             <input
               type="text"
-              value={description}
-              onChange={e => setDescription(e.target.value)}
-              placeholder="e.g. Over-the-counter cash payment received by HR"
+              value={remarks}
+              onChange={e => setRemarks(e.target.value)}
+              placeholder="e.g. Additional payment notes or remarks"
               className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
             />
           </div>

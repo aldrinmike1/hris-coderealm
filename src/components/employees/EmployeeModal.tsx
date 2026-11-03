@@ -72,7 +72,6 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
     pagibigNumber: '',
     pagibigEnabled: true,
     tinEnabled: true,
-    mlsDeduction: 0,
     restDays: ['Sunday'] as string[],
     shiftId: 'shift-regular',
   });
@@ -125,7 +124,6 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
         philhealthEnabled: employeeToEdit.philhealthEnabled !== undefined ? employeeToEdit.philhealthEnabled : true,
         pagibigNumber: employeeToEdit.pagibigNumber || '',
         pagibigEnabled: employeeToEdit.pagibigEnabled !== undefined ? employeeToEdit.pagibigEnabled : true,
-        mlsDeduction: employeeToEdit.mlsDeduction || 0,
         restDays: employeeToEdit.restDays && employeeToEdit.restDays.length > 0 ? employeeToEdit.restDays : ['Sunday'],
         shiftId: employeeToEdit.shiftId || (shifts.find(s => s.isDefault)?.id || shifts[0]?.id || 'shift-regular'),
       });
@@ -167,7 +165,6 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
         philhealthEnabled: true,
         pagibigNumber: '',
         pagibigEnabled: true,
-        mlsDeduction: 0,
         restDays: ['Sunday'],
         shiftId: shifts.find(s => s.isDefault)?.id || shifts[0]?.id || 'shift-regular',
       });
@@ -294,7 +291,6 @@ export const EmployeeModal: React.FC<EmployeeModalProps> = ({
       pagibigEnabled: formData.pagibigEnabled,
       tinNumber: formData.tinNumber.trim(),
       tinEnabled: formData.tinEnabled,
-      mlsDeduction: employeeToEdit?.mlsDeduction || 0,
       dateStarted: formData.dateStarted,
       dateResigned: formData.dateResigned ? formData.dateResigned : null,
       biometrixId: formData.biometrixId.trim(),

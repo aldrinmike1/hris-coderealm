@@ -110,6 +110,7 @@ export const Header: React.FC<HeaderProps> = ({
           <span>{dateStr} • {timeStr || '08:00:00 AM'}</span>
         </div>
 
+
         {/* Quick Kiosk Punch Button */}
         {onOpenPunchModal && (
           <button

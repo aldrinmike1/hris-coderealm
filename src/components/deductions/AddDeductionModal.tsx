@@ -101,10 +101,6 @@ export const AddDeductionModal: React.FC<AddDeductionModalProps> = ({
       showToast('Please select an employee.', 'error');
       return;
     }
-    if (!description.trim()) {
-      showToast('Please provide a deduction description.', 'error');
-      return;
-    }
     if (numAmount <= 0) {
       showToast('Principal amount must be greater than ₱0.', 'error');
       return;
@@ -114,9 +110,11 @@ export const AddDeductionModal: React.FC<AddDeductionModalProps> = ({
       return;
     }
 
+    const finalDescription = description.trim() || type;
+
     if (editingDeduction) {
       updateEmployeeDeduction(editingDeduction.id, {
-        description: description.trim(),
+        description: finalDescription,
         type,
         date,
         amount: numAmount,
@@ -132,7 +130,7 @@ export const AddDeductionModal: React.FC<AddDeductionModalProps> = ({
         employeeId,
         deductionId: deductionId.trim() || undefined,
         type,
-        description: description.trim(),
+        description: finalDescription,
         date,
         amount: numAmount,
         interest: calculatedInterest,
@@ -201,22 +199,6 @@ export const AddDeductionModal: React.FC<AddDeductionModalProps> = ({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {/* Deduction ID */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                Deduction ID <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={deductionId}
-                onChange={e => setDeductionId(e.target.value)}
-                disabled={!!editingDeduction}
-                required
-                placeholder="e.g. DED-2026-001"
-                className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-hidden disabled:bg-slate-100"
-              />
-            </div>
-
             {/* Deduction Type */}
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
@@ -229,56 +211,36 @@ export const AddDeductionModal: React.FC<AddDeductionModalProps> = ({
               >
                 <option value="Loan">Loan (Cash / Emergency / SSS)</option>
                 <option value="Salary Deduction">Salary Deduction (Uniform / HMO / Gear)</option>
+                <option value="MLS">MLS</option>
                 <option value="Others">Others (Vale / Tools / Misc)</option>
               </select>
             </div>
+
+            {/* Grant Date */}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                Date Granted / Effective <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="date"
+                value={date}
+                onChange={e => setDate(e.target.value)}
+                required
+                className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              />
+            </div>
           </div>
 
-          {/* Description */}
+          {/* Description (Optional, suggested presets removed) */}
           <div>
             <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-              Description <span className="text-rose-500">*</span>
+              Description <span className="text-slate-400 text-[10px] font-normal lowercase">(optional)</span>
             </label>
             <input
               type="text"
               value={description}
               onChange={e => setDescription(e.target.value)}
-              required
-              placeholder="e.g. Company Emergency Loan, Uniform & Safety Boots, Vale"
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
-            />
-            {/* Quick Suggestions */}
-            <div className="flex flex-wrap gap-1.5 mt-1.5">
-              {[
-                'Company Emergency Loan',
-                'SSS Salary Loan',
-                'Uniform & Safety Shoes',
-                'Cash Advance / Vale',
-                'HMO Dependent Premium',
-                'Tool & Equipment Deposit',
-              ].map(preset => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => setDescription(preset)}
-                  className="text-[10px] text-slate-600 hover:text-blue-700 bg-slate-100 hover:bg-blue-50 px-2 py-0.5 rounded-md transition-colors"
-                >
-                  + {preset}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Grant Date */}
-          <div>
-            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-              Date Granted / Effective <span className="text-rose-500">*</span>
-            </label>
-            <input
-              type="date"
-              value={date}
-              onChange={e => setDate(e.target.value)}
-              required
+              placeholder="e.g. Loan purpose, Uniform & Safety Boots, Vale (optional)"
               className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
             />
           </div>
@@ -301,7 +263,7 @@ export const AddDeductionModal: React.FC<AddDeductionModalProps> = ({
                     onChange={e => setAmount(e.target.value)}
                     required
                     placeholder="10,000.00"
-                    className="w-full pl-7 pr-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                    className="w-full pl-7 pr-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                   />
                 </div>
               </div>

@@ -36,7 +36,7 @@ import { ConfirmDialog } from '../common/ConfirmDialog';
 
 interface EditableTableDeductionCellProps {
   payslip: Payslip;
-  field: 'cashAdvanceDeduction' | 'totalOtherDeductions' | 'mlsDeduction';
+  field: 'cashAdvanceDeduction' | 'totalOtherDeductions';
   label: string;
   colorClass: string;
   disabled?: boolean;
@@ -317,7 +317,6 @@ export const PayrollDashboard: React.FC = () => {
     let hdmfEE = 0;
     let hdmfER = 0;
     let tax = 0;
-    let mlsDeds = 0;
     let cashAdvanceDeds = 0;
     let otherDeds = 0;
     let lateDeds = 0;
@@ -333,7 +332,6 @@ export const PayrollDashboard: React.FC = () => {
       hdmfEE += ps.pagibigDeduction;
       hdmfER += ps.pagibigEmployerShare;
       tax += ps.withholdingTax;
-      mlsDeds += ps.mlsDeduction || 0;
       cashAdvanceDeds += ps.cashAdvanceDeduction || 0;
       otherDeds += ps.totalOtherDeductions || 0;
       lateDeds += ps.lateUndertimeDeduction;
@@ -350,7 +348,6 @@ export const PayrollDashboard: React.FC = () => {
       hdmfEE,
       hdmfER,
       tax,
-      mlsDeds,
       cashAdvanceDeds,
       otherDeds,
       lateDeds,
@@ -428,7 +425,6 @@ export const PayrollDashboard: React.FC = () => {
       'Withholding Tax': ps.withholdingTax,
       'Cash Advance (Vale)': ps.cashAdvanceDeduction || 0,
       'Other Deductions': ps.totalOtherDeductions || 0,
-      'MLS Deduction': ps.mlsDeduction || 0,
       'Total Deductions': ps.totalDeductions,
       'Net Pay': ps.netPay,
       'Status': ps.status,
@@ -763,7 +759,7 @@ export const PayrollDashboard: React.FC = () => {
               </div>
               <div className="text-base font-bold font-mono text-rose-700">-{formatCurrency(totals.totalDeds)}</div>
               <div className="text-[10px] text-slate-500 mt-0.5">
-                Gov: {formatCurrency(totals.sssEE + totals.phEE + totals.hdmfEE + totals.tax)} • MLS: {formatCurrency(totals.mlsDeds)}
+                Gov: {formatCurrency(totals.sssEE + totals.phEE + totals.hdmfEE + totals.tax)} • Other Deds: {formatCurrency(totals.cashAdvanceDeds + totals.otherDeds)}
               </div>
             </div>
 
@@ -871,7 +867,6 @@ export const PayrollDashboard: React.FC = () => {
                     <th className="py-2.5 px-3 text-right text-rose-700">Gov. Contribution</th>
                     <th className="py-2.5 px-3 text-right text-amber-700">Cash Adv.</th>
                     <th className="py-2.5 px-3 text-right text-rose-700">Others</th>
-                    <th className="py-2.5 px-3 text-right text-slate-700">MLS</th>
                     <th className="py-2.5 px-3 text-right text-rose-800">Total Deductions</th>
                     <th className="py-2.5 px-3 text-right text-emerald-800 font-bold">Net Pay (PHP)</th>
                     <th className="py-2.5 px-3 text-right">Actions</th>
@@ -880,7 +875,7 @@ export const PayrollDashboard: React.FC = () => {
                 <tbody className="divide-y divide-slate-200">
                   {periodPayslips.length === 0 ? (
                     <tr>
-                      <td colSpan={(isAdmin || isManager) ? 13 : 12} className="text-center py-10 text-slate-400">
+                      <td colSpan={(isAdmin || isManager) ? 12 : 11} className="text-center py-10 text-slate-400">
                         <Calculator className="w-6 h-6 mx-auto text-slate-300 mb-1" />
                         <p className="font-semibold text-xs text-slate-600">No payroll entries computed yet for this period.</p>
                         <button
@@ -967,23 +962,17 @@ export const PayrollDashboard: React.FC = () => {
                             onUpdate={updatePayslip}
                           />
 
-                          <EditableTableDeductionCell
-                            payslip={ps}
-                            field="totalOtherDeductions"
-                            label="Other Deductions"
-                            colorClass="text-rose-700"
-                            disabled={!isAdmin && !isManager}
-                            onUpdate={updatePayslip}
-                          />
-
-                          <EditableTableDeductionCell
-                            payslip={ps}
-                            field="mlsDeduction"
-                            label="MLS Loan"
-                            colorClass="text-slate-700"
-                            disabled={!isAdmin && !isManager}
-                            onUpdate={updatePayslip}
-                          />
+                          {/* Others (Read-only, preserves itemized deduction breakdown) */}
+                          <td
+                            className="py-2.5 px-3 text-right font-mono font-medium text-rose-700"
+                            title={
+                              ps.otherDeductions && ps.otherDeductions.length > 0
+                                ? ps.otherDeductions.map(d => `${d.name}: ₱${d.amount.toLocaleString()}`).join('\n')
+                                : undefined
+                            }
+                          >
+                            {ps.totalOtherDeductions > 0 ? `-${formatCurrency(ps.totalOtherDeductions)}` : '—'}
+                          </td>
 
                           <td className="py-2.5 px-3 text-right font-mono font-bold text-rose-700">
                             -{formatCurrency(ps.totalDeductions)}
@@ -1058,9 +1047,6 @@ export const PayrollDashboard: React.FC = () => {
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono text-rose-700 font-bold">
                         {totals.otherDeds > 0 ? `-${formatCurrency(totals.otherDeds)}` : '₱0.00'}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-mono text-slate-700 font-bold">
-                        {totals.mlsDeds > 0 ? `-${formatCurrency(totals.mlsDeds)}` : '₱0.00'}
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono text-rose-700">-{formatCurrency(totals.totalDeds)}</td>
                       <td className="py-2.5 px-3 text-right font-mono text-xs text-emerald-800 bg-emerald-100/60 font-bold">

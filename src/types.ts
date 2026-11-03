@@ -51,7 +51,6 @@ export interface Employee {
   tinNumber?: string;
   avatarUrl?: string;
   employmentType?: 'Regular' | 'Probationary' | 'Contractual' | 'Part-time';
-  mlsDeduction?: number; // Member Loan Scheme / Monthly Loan Sinking deduction
   cashAdvanceDeduction?: number; // Cash Advance / Vale deduction
   restDays?: string[]; // e.g. ['Sunday'] or ['Saturday', 'Sunday']
   shiftId?: string; // Assigned WorkShift ID (used to calculate tardiness/late)
@@ -214,7 +213,6 @@ export interface Payslip {
   pagibigDeduction: number;
   pagibigEmployerShare: number;
   withholdingTax: number;
-  mlsDeduction: number; // Member Loan Scheme / Monthly Loan Sinking deduction
   cashAdvanceDeduction?: number; // Cash Advance / Vale deduction
   otherDeductions: PayslipItem[];
   totalOtherDeductions: number;
@@ -273,7 +271,7 @@ export type NavigationTab =
 // DEDUCTION MODULE TYPES
 // ==========================================
 
-export type DeductionType = 'Loan' | 'Salary Deduction' | 'Others';
+export type DeductionType = 'Loan' | 'Salary Deduction' | 'MLS' | 'Others';
 export type DeductionStatus = 'Active' | 'Completed' | 'Paused';
 
 export interface DeductionLedgerEntry {
@@ -289,6 +287,7 @@ export interface DeductionLedgerEntry {
   remarks?: string;
   payslipId?: string; // Connected payslip ID if linked to a payslip
   payPeriodId?: string; // Connected pay period ID
+  thirteenthMonthYear?: number; // Connected 13th month year if linked to 13th month payment
   isManual?: boolean; // Whether the payment was manually recorded (true) or payroll-deducted (false)
   createdAt: string;
 }
@@ -337,6 +336,15 @@ export interface EmployeeWithDeductionSummary {
   deductions: EmployeeDeduction[];
 }
 
+export interface ThirteenthMonthDeduction {
+  id: string; // unique ID for this deduction line item
+  deductionId?: string; // If linked to an EmployeeDeduction in the deductions module
+  name: string; // e.g. "Emergency Cash Loan (DED-2026-001)" or "Uniform Balance"
+  type: 'DEDUCTION_MODULE' | 'OTHER';
+  amount: number;
+  remarks?: string;
+}
+
 export interface ThirteenthMonthItem {
   employeeId: string;
   employeeNumber: string;
@@ -345,8 +353,15 @@ export interface ThirteenthMonthItem {
   position: string;
   dailyRate: number;
   monthsWorkedCount: number; // e.g. 12
-  totalBasicSalaryEarned: number; // Sum of annual basic salary
-  thirteenthMonthPay: number; // (totalBasicSalaryEarned / 12)
+  totalBasicSalaryEarned: number; // Sum of annual basic salary (editable override)
+  thirteenthMonthPay: number; // Base Gross bonus: (totalBasicSalaryEarned / 12) or override
+  incentives?: number; // Additional Incentive added to gross payment
+  otherEarnings?: number; // Other additions added to gross payment
+  otherEarningsDescription?: string; // Remarks / description for other gross additions
+  totalGrossPay?: number; // Total Gross Payment = thirteenthMonthPay + (incentives || 0) + (otherEarnings || 0)
+  deductions?: ThirteenthMonthDeduction[]; // Deductions applied to this 13th month voucher
+  totalDeductions?: number; // Total amount deducted
+  netPay?: number; // Net amount payable after deductions
   taxableAmount: number; // Portion exceeding ₱90,000 threshold
   status: 'Draft' | 'Approved' | 'Paid';
   paymentDate?: string;
@@ -359,7 +374,9 @@ export interface ThirteenthMonthRecord {
   status: 'Draft' | 'Approved' | 'Paid';
   totalEmployees: number;
   totalBasicEarnings: number;
-  totalThirteenthMonthPay: number;
+  totalThirteenthMonthPay: number; // Gross 13th month pay
+  totalDeductions?: number; // Total deductions across all vouchers
+  totalNetPay?: number; // Total net 13th month pay disbursed
   payoutDate: string; // e.g. "2026-12-15"
   generatedAt: string;
   approvedAt?: string;

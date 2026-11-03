@@ -19,7 +19,10 @@ import {
   Info,
   ArrowRight,
   Sparkles,
+  Edit3,
 } from 'lucide-react';
+import { EditThirteenthMonthVoucherModal } from './EditThirteenthMonthVoucherModal';
+import { ThirteenthMonthVoucherModal } from './ThirteenthMonthVoucherModal';
 
 export const ThirteenthMonthPayView: React.FC = () => {
   const {
@@ -35,25 +38,32 @@ export const ThirteenthMonthPayView: React.FC = () => {
 
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedDepartment, setSelectedDepartment] = useState('ALL');
   const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false);
   const [generateYearInput, setGenerateYearInput] = useState<number>(new Date().getFullYear());
   const [generatePayoutDateInput, setGeneratePayoutDateInput] = useState<string>(`${new Date().getFullYear()}-12-15`);
   const [activePayslipItem, setActivePayslipItem] = useState<{ record: ThirteenthMonthRecord; item: ThirteenthMonthItem } | null>(null);
+  const [editingVoucherItem, setEditingVoucherItem] = useState<{ record: ThirteenthMonthRecord; item: ThirteenthMonthItem } | null>(null);
 
   const selectedRecord = thirteenthMonthRecords.find(r => r.year === selectedYear) || null;
 
+  // Resolve current live item for editing/preview modal in case record was updated
+  const currentEditingItem: ThirteenthMonthItem | null = editingVoucherItem && selectedRecord
+    ? (selectedRecord.items.find(i => i.employeeId === editingVoucherItem.item.employeeId) || editingVoucherItem.item)
+    : (editingVoucherItem?.item || null);
+
+  const currentPreviewItem: ThirteenthMonthItem | null = activePayslipItem && selectedRecord
+    ? (selectedRecord.items.find(i => i.employeeId === activePayslipItem.item.employeeId) || activePayslipItem.item)
+    : (activePayslipItem?.item || null);
+
   // Filtered employees for detail view
   const filteredItems = selectedRecord ? selectedRecord.items.filter(item => {
-    const matchesSearch =
+    return (
+      !searchTerm ||
       item.employeeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
       item.employeeNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.position.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesDept = selectedDepartment === 'ALL' || item.department === selectedDepartment;
-    return matchesSearch && matchesDept;
+      item.position.toLowerCase().includes(searchTerm.toLowerCase())
+    );
   }) : [];
-
-  const departments = Array.from(new Set(employees.map(e => e.department)));
 
   const handleGenerateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,11 +87,13 @@ export const ThirteenthMonthPayView: React.FC = () => {
             .header { text-align: center; border-bottom: 2px solid #0284c7; padding-bottom: 15px; margin-bottom: 20px; }
             .company { font-size: 20px; font-weight: 800; color: #0369a1; }
             .title { font-size: 16px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-top: 5px; }
-            .meta { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 20px; background: #f8fafc; padding: 10px; border-radius: 6px; }
-            table { width: 100%; border-collapse: collapse; font-size: 12px; }
-            th, td { border: 1px solid #cbd5e1; padding: 8px 10px; text-align: left; }
+            .meta { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 20px; background: #f8fafc; padding: 12px; border-radius: 6px; }
+            table { width: 100%; border-collapse: collapse; font-size: 11px; }
+            th, td { border: 1px solid #cbd5e1; padding: 7px 9px; text-align: left; }
             th { background: #f1f5f9; font-weight: 700; text-transform: uppercase; font-size: 10px; }
             .number { text-align: right; font-family: monospace; }
+            .deduction { color: #dc2626; }
+            .net-amount { color: #166534; font-weight: bold; }
             .footer { margin-top: 40px; display: flex; justify-content: space-between; font-size: 11px; }
             .sig-line { border-top: 1px solid #94a3b8; width: 180px; text-align: center; padding-top: 5px; margin-top: 40px; }
           </style>
@@ -95,7 +107,9 @@ export const ThirteenthMonthPayView: React.FC = () => {
             <div><strong>Status:</strong> ${record.status.toUpperCase()}</div>
             <div><strong>Payout Date:</strong> ${record.payoutDate}</div>
             <div><strong>Total Employees:</strong> ${record.totalEmployees}</div>
-            <div><strong>Total Disbursement:</strong> ₱${record.totalThirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+            <div><strong>Gross Bonus:</strong> ₱${record.totalThirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+            ${record.totalDeductions ? `<div><strong>Deductions:</strong> <span style="color:#dc2626;">-₱${record.totalDeductions.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span></div>` : ''}
+            <div><strong>Net Payout:</strong> <span style="color:#166534; font-weight:bold;">₱${(record.totalNetPay ?? record.totalThirteenthMonthPay).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span></div>
           </div>
           <table>
             <thead>
@@ -105,8 +119,10 @@ export const ThirteenthMonthPayView: React.FC = () => {
                 <th>Department</th>
                 <th>Position</th>
                 <th class="number">Daily Rate</th>
-                <th class="number">Total Annual Basic</th>
-                <th class="number">13th Month Pay (Basic/12)</th>
+                <th class="number">Annual Basic</th>
+                <th class="number">Gross 13th</th>
+                <th class="number">Deductions</th>
+                <th class="number">Net Payout</th>
               </tr>
             </thead>
             <tbody>
@@ -118,7 +134,9 @@ export const ThirteenthMonthPayView: React.FC = () => {
                   <td>${item.position}</td>
                   <td class="number">₱${item.dailyRate.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                   <td class="number">₱${item.totalBasicSalaryEarned.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                  <td class="number"><strong>₱${item.thirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong></td>
+                  <td class="number">₱${item.thirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                  <td class="number deduction">${(item.totalDeductions && item.totalDeductions > 0) ? `-₱${item.totalDeductions.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}</td>
+                  <td class="number net-amount">₱${(item.netPay ?? item.thirteenthMonthPay).toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -147,6 +165,48 @@ export const ThirteenthMonthPayView: React.FC = () => {
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
 
+    const hasDeductions = !!(item.deductions && item.deductions.length > 0);
+    const deductionsListHtml = hasDeductions
+      ? `
+        <div style="margin-top:14px; margin-bottom:14px; border:1px solid #fed7aa; background:#fffbeb; border-radius:6px; padding:10px 12px;">
+          <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:#b45309; margin-bottom:6px;">
+            Itemized Deductions Applied:
+          </div>
+          <table style="width:100%; border-collapse:collapse; font-size:11px;">
+            <thead>
+              <tr style="border-bottom:1px solid #fde68a;">
+                <th style="padding:4px 6px; text-align:left; color:#78350f;">Description</th>
+                <th style="padding:4px 6px; text-align:center; color:#78350f;">Type</th>
+                <th style="padding:4px 6px; text-align:right; color:#78350f;">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${item.deductions!.map(d => `
+                <tr style="border-bottom:1px solid #fef3c7;">
+                  <td style="padding:5px 6px; color:#1e293b;">
+                    <strong>${d.name}</strong>
+                    ${d.remarks ? `<span style="font-size:10px; color:#64748b; margin-left:4px;">(${d.remarks})</span>` : ''}
+                  </td>
+                  <td style="padding:5px 6px; text-align:center; font-size:10px; color:#475569;">
+                    ${d.type === 'DEDUCTION_MODULE' ? 'Deduction Ledger' : 'Other / Custom'}
+                  </td>
+                  <td style="padding:5px 6px; text-align:right; font-family:monospace; color:#dc2626; font-weight:bold;">
+                    -₱${d.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                  </td>
+                </tr>
+              `).join('')}
+              <tr style="font-weight:bold; border-top:1px solid #fcd34d;">
+                <td colspan="2" style="padding:6px 6px; text-align:right; color:#78350f;">Total Deductions:</td>
+                <td style="padding:6px 6px; text-align:right; font-family:monospace; color:#dc2626;">
+                  -₱${(item.totalDeductions || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      `
+      : '';
+
     printWindow.document.write(`
       <!DOCTYPE html>
       <html>
@@ -157,11 +217,11 @@ export const ThirteenthMonthPayView: React.FC = () => {
             .voucher { border: 2px solid #0284c7; padding: 25px; border-radius: 8px; max-width: 650px; margin: 0 auto; }
             .company { font-size: 18px; font-weight: 800; color: #0284c7; }
             .title { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #334155; margin-bottom: 20px; }
-            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px; margin-bottom: 20px; }
+            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px; margin-bottom: 15px; }
             .box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 12px; border-radius: 6px; }
             .box-title { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #64748b; margin-bottom: 4px; }
-            .amount { font-size: 22px; font-weight: 900; color: #0369a1; font-family: monospace; }
-            .sig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 40px; font-size: 11px; }
+            .amount { font-size: 24px; font-weight: 900; color: #166534; font-family: monospace; }
+            .sig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 35px; font-size: 11px; }
             .sig-line { border-top: 1px solid #94a3b8; text-align: center; padding-top: 4px; margin-top: 35px; }
           </style>
         </head>
@@ -189,14 +249,16 @@ export const ThirteenthMonthPayView: React.FC = () => {
                 <div class="box-title">Computation Basis</div>
                 <div>Daily Rate: ₱${item.dailyRate.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
                 <div>Annual Basic Salary: ₱${item.totalBasicSalaryEarned.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-                <div>Status: <strong>${item.status.toUpperCase()}</strong></div>
+                <div>Gross Bonus: <strong>₱${item.thirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong></div>
               </div>
             </div>
 
-            <div class="box" style="background:#f0f9ff; border-color:#bae6fd; text-align:center; padding:15px;">
-              <div class="box-title" style="color:#0369a1;">Net 13th Month Pay Amount</div>
-              <div class="amount">₱${item.thirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-              <div style="font-size:11px; color:#0284c7; margin-top:4px;">
+            ${deductionsListHtml}
+
+            <div class="box" style="background:#f0fdf4; border-color:#86efac; text-align:center; padding:16px;">
+              <div class="box-title" style="color:#15803d; font-size:11px;">Net 13th Month Payable Amount</div>
+              <div class="amount">₱${(item.netPay ?? item.thirteenthMonthPay).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+              <div style="font-size:11px; color:#16a34a; margin-top:4px;">
                 Statutory Exemption: Tax-Exempt (Under ₱90,000.00 TRAIN Law Threshold)
               </div>
             </div>
@@ -341,7 +403,9 @@ export const ThirteenthMonthPayView: React.FC = () => {
                   <th className="py-3 px-4">Status</th>
                   <th className="py-3 px-4 text-center">Employees</th>
                   <th className="py-3 px-4 text-right">Total Annual Basic</th>
-                  <th className="py-3 px-4 text-right">13th Month Total</th>
+                  <th className="py-3 px-4 text-right">Gross Bonus</th>
+                  <th className="py-3 px-4 text-right">Deductions</th>
+                  <th className="py-3 px-4 text-right">Net Payout</th>
                   <th className="py-3 px-4">Payout Date</th>
                   <th className="py-3 px-4 text-center">Actions</th>
                 </tr>
@@ -349,7 +413,7 @@ export const ThirteenthMonthPayView: React.FC = () => {
               <tbody className="divide-y divide-slate-100">
                 {thirteenthMonthRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-12 text-center text-slate-400">
+                    <td colSpan={10} className="py-12 text-center text-slate-400">
                       <Gift className="w-8 h-8 mx-auto mb-2 text-slate-300" />
                       <p className="font-semibold text-slate-600">No 13th Month Pay generated yet</p>
                       <p className="text-xs text-slate-400 mt-1">Click "Generate 13th Month Pay" above to calculate for a year.</p>
@@ -389,8 +453,16 @@ export const ThirteenthMonthPayView: React.FC = () => {
                         <td className="py-3.5 px-4 text-right font-mono text-slate-600">
                           ₱{record.totalBasicEarnings.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                         </td>
-                        <td className="py-3.5 px-4 text-right font-mono font-bold text-emerald-600 text-sm">
+                        <td className="py-3.5 px-4 text-right font-mono font-semibold text-slate-700">
                           ₱{record.totalThirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="py-3.5 px-4 text-right font-mono text-rose-600 font-semibold">
+                          {record.totalDeductions && record.totalDeductions > 0
+                            ? `-₱${record.totalDeductions.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+                            : '—'}
+                        </td>
+                        <td className="py-3.5 px-4 text-right font-mono font-bold text-emerald-600 text-sm">
+                          ₱{(record.totalNetPay ?? record.totalThirteenthMonthPay).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                         </td>
                         <td className="py-3.5 px-4 text-slate-600 font-mono text-xs">
                           {record.payoutDate}
@@ -474,7 +546,11 @@ export const ThirteenthMonthPayView: React.FC = () => {
                   </span>
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Target Payout Date: <span className="font-mono font-semibold text-slate-700">{selectedRecord.payoutDate}</span> • Total Disbursed: <span className="font-mono font-bold text-emerald-600">₱{selectedRecord.totalThirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                  Target Payout Date: <span className="font-mono font-semibold text-slate-700">{selectedRecord.payoutDate}</span> • Gross: <span className="font-mono font-semibold text-slate-800">₱{selectedRecord.totalThirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                  {selectedRecord.totalDeductions ? (
+                    <> • Deductions: <span className="font-mono font-semibold text-rose-600">-₱{selectedRecord.totalDeductions.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span></>
+                  ) : null}
+                  {' '}• Net Payout: <span className="font-mono font-bold text-emerald-600">₱{(selectedRecord.totalNetPay ?? selectedRecord.totalThirteenthMonthPay).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
                 </p>
               </div>
             </div>
@@ -501,29 +577,16 @@ export const ThirteenthMonthPayView: React.FC = () => {
           </div>
 
           {/* Filters & Search */}
-          <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-center justify-between gap-3">
-            <div className="flex flex-1 items-center gap-2 w-full md:w-auto">
-              <div className="relative flex-1 max-w-xs">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                <input
-                  type="text"
-                  placeholder="Search employee or position..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-9 pr-3 py-1.5 text-xs rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                />
-              </div>
-
-              <select
-                value={selectedDepartment}
-                onChange={(e) => setSelectedDepartment(e.target.value)}
-                className="py-1.5 px-3 text-xs rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 bg-white"
-              >
-                <option value="ALL">All Departments</option>
-                {departments.map((d, idx) => (
-                  <option key={`dept-${d}-${idx}`} value={d}>{d}</option>
-                ))}
-              </select>
+          <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="relative flex-1 max-w-sm w-full">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                placeholder="Search employee or position..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 text-xs rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              />
             </div>
 
             <div className="text-xs text-slate-500 font-mono">
@@ -538,29 +601,28 @@ export const ThirteenthMonthPayView: React.FC = () => {
                 <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[10px] tracking-wider border-b border-slate-200">
                   <tr>
                     <th className="py-3 px-4">Employee</th>
-                    <th className="py-3 px-4">Department & Position</th>
-                    <th className="py-3 px-4 text-right">Daily Rate</th>
                     <th className="py-3 px-4 text-center">Months Active</th>
                     <th className="py-3 px-4 text-right">Annual Basic Salary</th>
-                    <th className="py-3 px-4 text-right">13th Month Bonus</th>
-                    <th className="py-3 px-4 text-center">Tax Status</th>
-                    <th className="py-3 px-4 text-center">Voucher Action</th>
+                    <th className="py-3 px-4 text-right">Gross Bonus</th>
+                    <th className="py-3 px-4 text-right">Deductions</th>
+                    <th className="py-3 px-4 text-right">Net 13th Month</th>
+                    <th className="py-3 px-4 text-center">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredItems.map((item, idx) => {
+                    const baseBonus = item.thirteenthMonthPay;
+                    const incentive = item.incentives || 0;
+                    const otherEarn = item.otherEarnings || 0;
+                    const grossAmount = item.totalGrossPay ?? (baseBonus + incentive + otherEarn);
+                    const deductionAmount = item.totalDeductions || 0;
+                    const netPayout = item.netPay ?? (grossAmount - deductionAmount);
+
                     return (
                       <tr key={`emp-13th-${item.employeeId}-${idx}`} className="hover:bg-slate-50 transition-colors">
                         <td className="py-3 px-4 font-semibold text-slate-900">
                           <div>{item.employeeName}</div>
                           <div className="text-[10px] font-mono text-slate-400">{item.employeeNumber}</div>
-                        </td>
-                        <td className="py-3 px-4 text-slate-600">
-                          <div>{item.position}</div>
-                          <div className="text-[10px] text-slate-400">{item.department}</div>
-                        </td>
-                        <td className="py-3 px-4 text-right font-mono text-slate-600">
-                          ₱{item.dailyRate.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                         </td>
                         <td className="py-3 px-4 text-center font-bold text-slate-700 font-mono">
                           {item.monthsWorkedCount} mos
@@ -568,28 +630,50 @@ export const ThirteenthMonthPayView: React.FC = () => {
                         <td className="py-3 px-4 text-right font-mono text-slate-700">
                           ₱{item.totalBasicSalaryEarned.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                         </td>
-                        <td className="py-3 px-4 text-right font-mono font-bold text-emerald-600 text-sm">
-                          ₱{item.thirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3 px-4 text-center">
-                          {item.taxableAmount > 0 ? (
-                            <span className="text-[10px] bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded font-semibold">
-                              Taxable (&gt;90k)
-                            </span>
-                          ) : (
-                            <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded font-semibold">
-                              Tax Exempt
-                            </span>
+                        <td className="py-3 px-4 text-right font-mono font-semibold text-slate-800">
+                          <div>₱{grossAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+                          {(incentive > 0 || otherEarn > 0) && (
+                            <div className="text-[10px] text-indigo-600 font-normal">
+                              Base: ₱{baseBonus.toLocaleString()} (+₱{(incentive + otherEarn).toLocaleString()})
+                            </div>
                           )}
                         </td>
+                        <td className="py-3 px-4 text-right font-mono">
+                          {deductionAmount > 0 ? (
+                            <div className="flex flex-col items-end">
+                              <span className="font-semibold text-rose-600">
+                                -₱{deductionAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                              </span>
+                              <span className="text-[10px] text-slate-400">
+                                {item.deductions?.length || 1} item{item.deductions && item.deductions.length > 1 ? 's' : ''}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono font-bold text-emerald-600 text-sm">
+                          ₱{netPayout.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </td>
                         <td className="py-3 px-4 text-center">
-                          <button
-                            onClick={() => setActivePayslipItem({ record: selectedRecord, item })}
-                            className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 mx-auto transition-colors cursor-pointer"
-                          >
-                            <Printer className="w-3.5 h-3.5 text-slate-500" />
-                            <span>Voucher</span>
-                          </button>
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              onClick={() => setEditingVoucherItem({ record: selectedRecord, item })}
+                              className="px-2.5 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                              title="Edit voucher deductions from deduction ledger or custom"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>Edit Voucher</span>
+                            </button>
+                            <button
+                              onClick={() => setActivePayslipItem({ record: selectedRecord, item })}
+                              className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                              title="View and print 13th month pay voucher"
+                            >
+                              <Printer className="w-3.5 h-3.5 text-slate-500" />
+                              <span>Voucher</span>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -689,73 +773,27 @@ export const ThirteenthMonthPayView: React.FC = () => {
       )}
 
       {/* SINGLE VOUCHER MODAL */}
-      {activePayslipItem && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden">
-            <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-              <div className="font-bold text-slate-800 text-xs flex items-center gap-2">
-                <Gift className="w-4 h-4 text-indigo-600" />
-                <span>13th Month Pay Voucher Preview</span>
-              </div>
-              <button
-                onClick={() => setActivePayslipItem(null)}
-                className="text-slate-400 hover:text-slate-600 font-bold text-sm"
-              >
-                ✕
-              </button>
-            </div>
+      <ThirteenthMonthVoucherModal
+        isOpen={!!activePayslipItem}
+        onClose={() => setActivePayslipItem(null)}
+        item={currentPreviewItem}
+        record={activePayslipItem?.record}
+        onEditVoucher={() => {
+          if (!activePayslipItem) return;
+          const rec = activePayslipItem.record;
+          const itm = currentPreviewItem || activePayslipItem.item;
+          setActivePayslipItem(null);
+          setEditingVoucherItem({ record: rec, item: itm });
+        }}
+      />
 
-            <div className="p-5 space-y-4 text-xs">
-              <div className="border border-indigo-100 bg-indigo-50/50 p-4 rounded-xl text-center space-y-1">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">
-                  13th Month Bonus ({activePayslipItem.record.year})
-                </span>
-                <div className="text-2xl font-black text-indigo-900 font-mono">
-                  ₱{activePayslipItem.item.thirteenthMonthPay.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </div>
-                <div className="text-[11px] text-indigo-700">
-                  {activePayslipItem.item.employeeName} ({activePayslipItem.item.employeeNumber})
-                </div>
-              </div>
-
-              <div className="space-y-2 border-t border-b border-slate-100 py-3">
-                <div className="flex justify-between text-slate-600">
-                  <span>Position / Dept:</span>
-                  <span className="font-semibold text-slate-800">{activePayslipItem.item.position} ({activePayslipItem.item.department})</span>
-                </div>
-                <div className="flex justify-between text-slate-600">
-                  <span>Daily Rate:</span>
-                  <span className="font-mono font-semibold text-slate-800">₱{activePayslipItem.item.dailyRate.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                </div>
-                <div className="flex justify-between text-slate-600">
-                  <span>Annual Basic Earned:</span>
-                  <span className="font-mono font-semibold text-slate-800">₱{activePayslipItem.item.totalBasicSalaryEarned.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                </div>
-                <div className="flex justify-between text-slate-600">
-                  <span>Taxability Status:</span>
-                  <span className="font-semibold text-emerald-600">Tax-Exempt (TRAIN Law)</span>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  onClick={() => setActivePayslipItem(null)}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors"
-                >
-                  Close
-                </button>
-                <button
-                  onClick={() => handlePrintSinglePayslip(activePayslipItem.item, activePayslipItem.record)}
-                  className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span>Print Official Voucher</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* EDIT 13TH MONTH VOUCHER DEDUCTIONS MODAL */}
+      <EditThirteenthMonthVoucherModal
+        isOpen={!!editingVoucherItem}
+        onClose={() => setEditingVoucherItem(null)}
+        item={currentEditingItem}
+        year={editingVoucherItem?.record.year || selectedRecord?.year || new Date().getFullYear()}
+      />
     </div>
   );
 };

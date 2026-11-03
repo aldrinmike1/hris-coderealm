@@ -1,0 +1,86 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    // Admins collection
+    match /admins/{adminId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(adminId);
+    }
+
+    // Company Settings & Profile
+    match /companyProfile/{profileId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(profileId);
+    }
+
+    // System Users
+    match /systemUsers/{userId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(userId);
+    }
+
+    // Employee Master Records
+    match /employees/{employeeId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(employeeId);
+    }
+
+    // Shift Schedules
+    match /shifts/{shiftId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(shiftId);
+    }
+
+    // Daily Time Records
+    match /dtrRecords/{dtrId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(dtrId);
+    }
+
+    // DTR Drafts & Biometric Imports
+    match /dtrDrafts/{draftId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(draftId);
+    }
+
+    // Pay Periods & Payroll Registers
+    match /payPeriods/{payPeriodId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(payPeriodId);
+    }
+
+    // Payslips
+    match /payslips/{payslipId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(payslipId);
+    }
+
+    // Employee Deductions & Loan Ledgers
+    match /employeeDeductions/{deductionId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(deductionId);
+    }
+
+    // 13th Month Records
+    match /thirteenthMonthRecords/{yearId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(yearId);
+    }
+
+    // Immutable Audit Trail Logs
+    match /auditLogs/{logId} {
+      allow get, list: if true;
+      allow create: if isValidId(logId);
+      allow update, delete: if false;
+    }
+  }
+}

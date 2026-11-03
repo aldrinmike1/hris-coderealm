@@ -4,13 +4,11 @@ import {
   X,
   Calendar,
   Plus,
-  Sparkles,
   Trash2,
   Tag,
   Info,
   ChevronLeft,
   ChevronRight,
-  Zap,
   Check,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -18,7 +16,6 @@ import { PeriodHoliday, PayPeriod } from '../../types';
 import { getPaydayMonthInfo } from '../../utils/calculations';
 import {
   generateWeeklyCutoffsForMonth,
-  getSuggestedNextWeeklyCutoff,
   getPhilippineHolidaysInRange,
 } from '../../utils/philippineHolidays';
 
@@ -33,42 +30,92 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
+/**
+ * Computes the weekly cutoff preset for the current week containing today's date
+ */
+function getCurrentWeekCutoff(existingPeriods: PayPeriod[] = []) {
+  const today = new Date();
+  const currentYear = today.getFullYear();
+  const currentMonth = today.getMonth();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const todayIso = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+
+  // Presets whose payday falls in the current month
+  const currentMonthPresets = generateWeeklyCutoffsForMonth(currentYear, currentMonth, existingPeriods);
+
+  // 1. Direct match: today is within the weekly cutoff dates (Saturday to Friday)
+  let matched = currentMonthPresets.find(p => todayIso >= p.startDate && todayIso <= p.endDate);
+
+  // 2. If today is Saturday payday of one of the presets
+  if (!matched) {
+    matched = currentMonthPresets.find(p => todayIso === p.payoutDate);
+  }
+
+  // 3. If today falls in a week whose payday is in adjacent month
+  if (!matched) {
+    const prevMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+    const prevYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+    const prevPresets = generateWeeklyCutoffsForMonth(prevYear, prevMonth, existingPeriods);
+    matched = prevPresets.find(p => todayIso >= p.startDate && todayIso <= p.endDate);
+    if (matched) {
+      return { year: prevYear, month: prevMonth, preset: matched };
+    }
+
+    const nextMonth = currentMonth === 11 ? 0 : currentMonth + 1;
+    const nextYear = currentMonth === 11 ? currentYear + 1 : currentYear;
+    const nextPresets = generateWeeklyCutoffsForMonth(nextYear, nextMonth, existingPeriods);
+    matched = nextPresets.find(p => todayIso >= p.startDate && todayIso <= p.endDate);
+    if (matched) {
+      return { year: nextYear, month: nextMonth, preset: matched };
+    }
+  }
+
+  return {
+    year: currentYear,
+    month: currentMonth,
+    preset: matched || currentMonthPresets[0] || null,
+  };
+}
+
 export const NewPayPeriodModal: React.FC<NewPayPeriodModalProps> = ({ isOpen, onClose, onCreated }) => {
   const { createPayPeriod, payPeriods } = useApp();
 
-  // Smart suggestion for next cutoff based on latest existing pay period
-  const suggestedNext = useMemo(() => getSuggestedNextWeeklyCutoff(payPeriods), [payPeriods]);
+  // Determine current week preset based on today's date
+  const currentWeekInfo = useMemo(() => getCurrentWeekCutoff(payPeriods), [payPeriods]);
 
-  // Dynamic preset navigation month and year
-  const [navYear, setNavYear] = useState(() => suggestedNext?.targetYear ?? new Date().getFullYear());
-  const [navMonth, setNavMonth] = useState(() => suggestedNext?.targetMonth ?? new Date().getMonth());
+  // Dynamic preset navigation month and year (defaults to current month & year)
+  const [navYear, setNavYear] = useState(() => new Date().getFullYear());
+  const [navMonth, setNavMonth] = useState(() => new Date().getMonth());
 
-  const [name, setName] = useState('September 12 - 18, 2026 (Weekly Cutoff)');
-  const [startDate, setStartDate] = useState('2026-09-12'); // Saturday
-  const [endDate, setEndDate] = useState('2026-09-18'); // Friday
-  const [payoutDate, setPayoutDate] = useState('2026-09-19'); // Saturday
-  const [isLastCutoffOfMonth, setIsLastCutoffOfMonth] = useState(false);
-  const [holidays, setHolidays] = useState<PeriodHoliday[]>([]);
+  // Form fields defaulted to current week
+  const [name, setName] = useState(() => currentWeekInfo.preset?.name || '');
+  const [startDate, setStartDate] = useState(() => currentWeekInfo.preset?.startDate || '');
+  const [endDate, setEndDate] = useState(() => currentWeekInfo.preset?.endDate || '');
+  const [payoutDate, setPayoutDate] = useState(() => currentWeekInfo.preset?.payoutDate || '');
+  const [isLastCutoffOfMonth, setIsLastCutoffOfMonth] = useState(() => currentWeekInfo.preset?.isLastCutoffOfMonth || false);
+  const [holidays, setHolidays] = useState<PeriodHoliday[]>(() => currentWeekInfo.preset?.holidays || []);
 
-  // Automatically initialize modal fields with suggested next cutoff or current month when opened
+  // When modal opens: always default dropdown to current month & year, and select current week cutoff
   useEffect(() => {
     if (isOpen) {
-      if (suggestedNext) {
-        setStartDate(suggestedNext.startDate);
-        setEndDate(suggestedNext.endDate);
-        setPayoutDate(suggestedNext.payoutDate);
-        setName(suggestedNext.name);
-        setIsLastCutoffOfMonth(suggestedNext.isLastCutoffOfMonth);
-        setHolidays(suggestedNext.holidays || []);
-        setNavYear(suggestedNext.targetYear);
-        setNavMonth(suggestedNext.targetMonth);
-      } else {
-        const today = new Date();
-        setNavYear(today.getFullYear());
-        setNavMonth(today.getMonth());
+      const today = new Date();
+      const currentYear = today.getFullYear();
+      const currentMonth = today.getMonth();
+
+      setNavYear(currentYear);
+      setNavMonth(currentMonth);
+
+      const weekData = getCurrentWeekCutoff(payPeriods);
+      if (weekData.preset) {
+        setStartDate(weekData.preset.startDate);
+        setEndDate(weekData.preset.endDate);
+        setPayoutDate(weekData.preset.payoutDate);
+        setName(weekData.preset.name);
+        setIsLastCutoffOfMonth(weekData.preset.isLastCutoffOfMonth);
+        setHolidays(weekData.preset.holidays || []);
       }
     }
-  }, [isOpen, suggestedNext]);
+  }, [isOpen, payPeriods]);
 
   // Preset helper for weekly Saturday -> Friday cutoffs
   const applyWeeklyPreset = (
@@ -111,26 +158,6 @@ export const NewPayPeriodModal: React.FC<NewPayPeriodModalProps> = ({ isOpen, on
     } else {
       setNavMonth(prev => prev + 1);
     }
-  };
-
-  const handleJumpToCurrentMonth = () => {
-    const today = new Date();
-    setNavYear(today.getFullYear());
-    setNavMonth(today.getMonth());
-  };
-
-  const handleApplySuggested = () => {
-    if (!suggestedNext) return;
-    setNavYear(suggestedNext.targetYear);
-    setNavMonth(suggestedNext.targetMonth);
-    applyWeeklyPreset(
-      suggestedNext.startDate,
-      suggestedNext.endDate,
-      suggestedNext.payoutDate,
-      suggestedNext.name,
-      suggestedNext.holidays,
-      suggestedNext.isLastCutoffOfMonth
-    );
   };
 
   // Dynamically generated weekly presets for the chosen navYear & navMonth
@@ -259,60 +286,23 @@ export const NewPayPeriodModal: React.FC<NewPayPeriodModalProps> = ({ isOpen, on
                 </div>
                 <div>
                   <h2 className="text-xl font-bold tracking-tight">Create Weekly Pay Period</h2>
-                  <p className="text-xs text-slate-400 mt-0.5">Saturday to Friday Cutoff • Saturday Payday</p>
                 </div>
               </div>
               <button
                 onClick={onClose}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
           </div>
 
-          {/* Weekly Schedule Callout */}
-          <div className="bg-indigo-50 border-b border-indigo-100 p-3.5 flex items-start gap-2.5 text-xs text-indigo-900">
-            <Sparkles className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
-            <div>
-              <span className="font-bold block">Weekly Payroll & Holiday System</span>
-              <p className="text-[11px] text-indigo-700">
-                Attendance runs from <strong>Saturday to Friday</strong> (7 days). You can specify all declared <strong>Regular</strong> & <strong>Special Non-Working Holidays</strong> to auto-calculate holiday pay during payroll calculation.
-              </p>
-            </div>
-          </div>
-
           <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
-            {/* Quick Weekly Presets (Dynamic for any Month & Year) */}
+            {/* Quick Weekly Presets */}
             <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                      Quick Weekly Presets
-                    </label>
-                    <span className="text-[10px] font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200">
-                      Dynamic
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 mt-0.5">
-                    Click any weekly preset below to auto-populate dates, period name, and Philippine holidays.
-                  </p>
-                </div>
-
-                {/* Quick Next Cutoff Suggestion Button */}
-                {suggestedNext && (
-                  <button
-                    type="button"
-                    onClick={handleApplySuggested}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded-xl transition-colors shadow-2xs shrink-0 self-start sm:self-auto"
-                    title={`Suggested next cutoff following ${suggestedNext.afterPeriodName || 'latest period'}`}
-                  >
-                    <Zap className="w-3.5 h-3.5 text-amber-600 fill-amber-500" />
-                    <span>⚡ Next Cutoff: {suggestedNext.startDate.slice(5)} to {suggestedNext.endDate.slice(5)}</span>
-                  </button>
-                )}
-              </div>
+              <label className="text-xs font-bold text-slate-800 uppercase tracking-wider block">
+                Quick Weekly Presets
+              </label>
 
               {/* Month & Year Navigator */}
               <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-white rounded-xl border border-slate-200">
@@ -355,20 +345,10 @@ export const NewPayPeriodModal: React.FC<NewPayPeriodModalProps> = ({ isOpen, on
                   <button
                     type="button"
                     onClick={handleNextMonth}
-                    className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
+                    className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
                     title="Next Month"
                   >
                     <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleJumpToCurrentMonth}
-                    className="px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 rounded-lg transition-colors"
-                  >
-                    📅 This Month
                   </button>
                 </div>
               </div>

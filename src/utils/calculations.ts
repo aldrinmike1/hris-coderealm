@@ -1,4 +1,4 @@
-import { Employee, DTRRecord, Payslip, PayslipItem, PeriodHoliday } from '../types';
+import { Employee, DTRRecord, Payslip, PayslipItem, PeriodHoliday, EmployeeDeduction, DeductionLedgerEntry } from '../types';
 import { findSSSBracket } from '../components/sss/SSSMatrixView';
 
 /**
@@ -492,7 +492,6 @@ export function generateEmployeePayslip(
   const defaultOtherDeductions: PayslipItem[] = customDeductions;
   const totalOtherDeductions = defaultOtherDeductions.reduce((acc, item) => acc + item.amount, 0);
 
-  const mlsDeduction = employee.mlsDeduction || 0;
   const cashAdvanceDeduction = employee.cashAdvanceDeduction || 0;
 
   const totalDeductions = Math.round(
@@ -501,7 +500,6 @@ export function generateEmployeePayslip(
       philhealth.employeeShare +
       pagibig.employeeShare +
       withholdingTax +
-      mlsDeduction +
       cashAdvanceDeduction +
       totalOtherDeductions) * 100
   ) / 100;
@@ -543,7 +541,6 @@ export function generateEmployeePayslip(
     pagibigDeduction: pagibig.employeeShare,
     pagibigEmployerShare: pagibig.employerShare,
     withholdingTax,
-    mlsDeduction,
     cashAdvanceDeduction,
     otherDeductions: defaultOtherDeductions,
     totalOtherDeductions,
@@ -674,3 +671,52 @@ export function getCutoffsFromToday(count: number = 5, refDate: Date = new Date(
   return options;
 }
 
+/**
+ * Recalculates running balances, totalPaid, runningBalance, and status for an EmployeeDeduction
+ */
+export function recalculateDeductionLedger(deduction: EmployeeDeduction): EmployeeDeduction {
+  const grantEntries = deduction.ledger.filter(e => e.type === 'GRANT');
+  const otherEntries = deduction.ledger.filter(e => e.type !== 'GRANT');
+
+  const initialGrantDebit = grantEntries.reduce((sum, e) => sum + (e.debit || 0), 0);
+  let curBal = initialGrantDebit > 0 ? initialGrantDebit : deduction.totalAmount;
+  let totPaid = 0;
+  let additionalDebits = 0;
+
+  const newLedger: DeductionLedgerEntry[] = grantEntries.map(g => ({
+    ...g,
+    runningBalance: curBal,
+  }));
+
+  otherEntries.forEach(e => {
+    const debitAmt = Number(e.debit) || 0;
+    const creditAmt = Number(e.credit) || 0;
+    totPaid += creditAmt;
+    additionalDebits += debitAmt;
+    curBal = Math.max(0, Math.round((curBal + debitAmt - creditAmt) * 100) / 100);
+    newLedger.push({
+      ...e,
+      debit: debitAmt,
+      credit: creditAmt,
+      runningBalance: curBal,
+    });
+  });
+
+  totPaid = Math.round(totPaid * 100) / 100;
+  const initialBase = initialGrantDebit > 0 ? initialGrantDebit : (deduction.amount + deduction.interest);
+  const totalAmount = Math.round((initialBase + additionalDebits) * 100) / 100;
+  const runningBal = Math.max(0, Math.round(curBal * 100) / 100);
+  const status: 'Active' | 'Completed' | 'Paused' =
+    runningBal <= 0 ? 'Completed' : (deduction.status === 'Completed' ? 'Active' : deduction.status);
+
+  return {
+    ...deduction,
+    amount: Math.round((deduction.amount + additionalDebits) * 100) / 100,
+    totalAmount,
+    ledger: newLedger,
+    totalPaid: totPaid,
+    runningBalance: runningBal,
+    status,
+    updatedAt: new Date().toISOString(),
+  };
+}

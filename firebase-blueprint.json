@@ -1,0 +1,224 @@
+{
+  "entities": {
+    "Employee": {
+      "title": "Employee",
+      "description": "Master employee record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "employeeNumber": { "type": "string", "maxLength": 64 },
+        "firstName": { "type": "string", "maxLength": 100 },
+        "lastName": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 128 },
+        "mobile": { "type": "string", "maxLength": 32 },
+        "dailyRate": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "department": { "type": "string", "maxLength": 100 },
+        "position": { "type": "string", "maxLength": 100 },
+        "dateStarted": { "type": "string", "maxLength": 32 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "employeeNumber", "firstName", "lastName", "dailyRate", "status"]
+    },
+    "WorkShift": {
+      "title": "WorkShift",
+      "description": "Work shift schedule definitions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "startTime": { "type": "string", "maxLength": 16 },
+        "endTime": { "type": "string", "maxLength": 16 },
+        "gracePeriodMinutes": { "type": "number" },
+        "isDefault": { "type": "boolean" }
+      },
+      "required": ["id", "name", "startTime", "endTime"]
+    },
+    "DTRRecord": {
+      "title": "DTRRecord",
+      "description": "Daily Time Record punch entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "maxLength": 64 },
+        "totalHours": { "type": "number" },
+        "overtimeHours": { "type": "number" },
+        "tardinessMinutes": { "type": "number" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "employeeId", "date"]
+    },
+    "DTRDraftRecord": {
+      "title": "DTRDraftRecord",
+      "description": "Biometric raw punch draft item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["PENDING", "VALIDATED", "REJECTED", "COMMITTED"] },
+        "totalHours": { "type": "number" }
+      },
+      "required": ["id", "date", "status"]
+    },
+    "PayPeriod": {
+      "title": "PayPeriod",
+      "description": "Payroll cutoff cycle and aggregation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 128 },
+        "startDate": { "type": "string", "maxLength": 32 },
+        "endDate": { "type": "string", "maxLength": 32 },
+        "payDate": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "maxLength": 32 },
+        "totalGrossPay": { "type": "number" },
+        "totalDeductions": { "type": "number" },
+        "totalNetPay": { "type": "number" },
+        "processedEmployeesCount": { "type": "number" }
+      },
+      "required": ["id", "name", "startDate", "endDate", "payDate", "status"]
+    },
+    "Payslip": {
+      "title": "Payslip",
+      "description": "Individual employee computed payslip",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "payPeriodId": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "employeeName": { "type": "string", "maxLength": 128 },
+        "grossPay": { "type": "number" },
+        "totalDeductions": { "type": "number" },
+        "netPay": { "type": "number" },
+        "isPaid": { "type": "boolean" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "payPeriodId", "employeeId", "grossPay", "netPay"]
+    },
+    "EmployeeDeduction": {
+      "title": "EmployeeDeduction",
+      "description": "Recurring loan, cash advance or deduction account with ledger entries",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "description": { "type": "string", "maxLength": 200 },
+        "amount": { "type": "number" },
+        "currentBalance": { "type": "number" },
+        "totalObligation": { "type": "number" },
+        "type": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "maxLength": 32 },
+        "cutoffDeductionAmount": { "type": "number" },
+        "date": { "type": "string", "maxLength": 32 }
+      },
+      "required": ["id", "employeeId", "description", "amount", "currentBalance", "type", "status"]
+    },
+    "ThirteenthMonthRecord": {
+      "title": "ThirteenthMonthRecord",
+      "description": "Annual 13th month statutory bonus calculation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "year": { "type": "number" },
+        "status": { "type": "string", "maxLength": 32 },
+        "payoutDate": { "type": "string", "maxLength": 32 },
+        "totalPayout": { "type": "number" },
+        "employeeCount": { "type": "number" }
+      },
+      "required": ["id", "year", "status", "totalPayout"]
+    },
+    "AuditLogEntry": {
+      "title": "AuditLogEntry",
+      "description": "Immutable security and action audit log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "action": { "type": "string", "maxLength": 64 },
+        "module": { "type": "string", "maxLength": 64 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userName": { "type": "string", "maxLength": 128 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "description": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "timestamp", "action", "module", "userId", "description"]
+    },
+    "CompanyProfile": {
+      "title": "CompanyProfile",
+      "description": "Organization and statutory settings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "companyName": { "type": "string", "maxLength": 200 },
+        "tin": { "type": "string", "maxLength": 64 },
+        "sssNumber": { "type": "string", "maxLength": 64 },
+        "philhealthNumber": { "type": "string", "maxLength": 64 },
+        "pagibigNumber": { "type": "string", "maxLength": 64 },
+        "email": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "companyName"]
+    },
+    "SystemUser": {
+      "title": "SystemUser",
+      "description": "Authorized system user profile",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["super admin", "admin", "manager", "staff"] },
+        "status": { "type": "string", "enum": ["active", "inactive"] }
+      },
+      "required": ["id", "email", "name", "role", "status"]
+    }
+  },
+  "firestore": {
+    "/employees/{employeeId}": {
+      "schema": "Employee",
+      "description": "Employee directory profile"
+    },
+    "/shifts/{shiftId}": {
+      "schema": "WorkShift",
+      "description": "Shift schedule configuration"
+    },
+    "/dtrRecords/{dtrId}": {
+      "schema": "DTRRecord",
+      "description": "Daily Time Records"
+    },
+    "/dtrDrafts/{draftId}": {
+      "schema": "DTRDraftRecord",
+      "description": "Biometric punch drafts"
+    },
+    "/payPeriods/{payPeriodId}": {
+      "schema": "PayPeriod",
+      "description": "Payroll cutoff register"
+    },
+    "/payslips/{payslipId}": {
+      "schema": "Payslip",
+      "description": "Individual payslips"
+    },
+    "/employeeDeductions/{deductionId}": {
+      "schema": "EmployeeDeduction",
+      "description": "Employee loans, deductions and ledgers"
+    },
+    "/thirteenthMonthRecords/{yearId}": {
+      "schema": "ThirteenthMonthRecord",
+      "description": "13th month payout records"
+    },
+    "/auditLogs/{logId}": {
+      "schema": "AuditLogEntry",
+      "description": "Audit trail log records"
+    },
+    "/companyProfile/{profileId}": {
+      "schema": "CompanyProfile",
+      "description": "Company corporate settings"
+    },
+    "/systemUsers/{userId}": {
+      "schema": "SystemUser",
+      "description": "Application user access accounts"
+    }
+  }
+}

@@ -35,7 +35,7 @@ import {
   INITIAL_DEDUCTIONS,
   generateSampleDTR,
 } from '../data/initialData';
-import { calculateDTRMetrics, generateEmployeePayslip, calculateLateMinutes } from '../utils/calculations';
+import { calculateDTRMetrics, generateEmployeePayslip, calculateLateMinutes, recalculateDeductionLedger } from '../utils/calculations';
 import {
   parseRawBiometricsText,
   buildDraftDTRRecords,
@@ -43,6 +43,16 @@ import {
   evaluateDTRAnomalies,
   SAMPLE_BIOMETRIC_DATA_CSV,
 } from '../utils/biometricsParser';
+import {
+  COLLECTIONS,
+  getCollectionDocs,
+  syncDocToFirestore,
+  deleteDocFromFirestore,
+  batchSyncDocsToFirestore,
+  batchDeleteDocsFromFirestore,
+  seedCollectionIfEmpty,
+  testConnection,
+} from '../services/firestoreService';
 
 interface AppContextType {
   currentUser: CurrentUser;
@@ -107,6 +117,7 @@ interface AppContextType {
   generateThirteenthMonthPay: (year: number, customPayoutDate?: string) => ThirteenthMonthRecord;
   approveThirteenthMonthPay: (year: number) => void;
   deleteThirteenthMonthRecord: (year: number) => void;
+  updateThirteenthMonthItem: (year: number, employeeId: string, updates: Partial<ThirteenthMonthItem>, applyToLedger?: boolean) => void;
 
   // Deductions & Loans actions
   employeeDeductions: EmployeeDeduction[];
@@ -139,8 +150,34 @@ interface AppContextType {
       isManual?: boolean;
     }
   ) => void;
+  updateDeductionPayment: (
+    deductionId: string,
+    entryId: string,
+    updates: {
+      amount: number;
+      date: string;
+      remarks?: string;
+      reference?: string;
+      description?: string;
+    }
+  ) => void;
   deleteDeductionLedgerEntry: (deductionId: string, entryId: string) => void;
+  adjustDeductionPrincipal: (
+    deductionId: string,
+    adjustment: {
+      amount: number;
+      date: string;
+      reason?: string;
+      reference?: string;
+      remarks?: string;
+      payPeriodId?: string;
+    }
+  ) => void;
   getEmployeeDeductions: (employeeId: string) => EmployeeDeduction[];
+  
+  // Cloud Firestore Status
+  isCloudConnected: boolean;
+  isCloudSyncing: boolean;
   
   // Audit logging
   logAudit: (data: {
@@ -174,134 +211,34 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const STORAGE_KEYS = {
   USER: 'hris_current_user_weekly_v1',
-  SYSTEM_USERS: 'hris_system_users_weekly_v1',
   IS_AUTHENTICATED: 'hris_is_authenticated_weekly_v1',
-  EMPLOYEES: 'hris_employees_weekly_v1',
-  SHIFTS: 'hris_work_shifts_weekly_v1',
-  DTR: 'hris_dtr_weekly_v1',
-  DTR_DRAFTS: 'hris_dtr_drafts_weekly_v1',
-  PAY_PERIODS: 'hris_pay_periods_weekly_v1',
-  PAYSLIPS: 'hris_payslips_weekly_v1',
-  AUDIT: 'hris_audit_logs_weekly_v1',
-  COMPANY_PROFILE: 'hris_company_profile_weekly_v1',
-  THIRTEENTH_MONTH: 'hris_13th_month_weekly_v1',
-  DEDUCTIONS: 'hris_employee_deductions_weekly_v1',
 };
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  // Load state from localStorage or initial seed
+  // Session & Auth state (persisted in session)
   const [currentUser, setCurrentUserState] = useState<CurrentUser>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.USER);
     return saved ? JSON.parse(saved) : INITIAL_CURRENT_USER;
   });
 
-  const [systemUsers, setSystemUsers] = useState<SystemUser[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.SYSTEM_USERS);
-    return saved ? JSON.parse(saved) : INITIAL_SYSTEM_USERS;
-  });
+  const [systemUsers, setSystemUsers] = useState<SystemUser[]>(INITIAL_SYSTEM_USERS);
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.IS_AUTHENTICATED);
     return saved !== null ? JSON.parse(saved) : true;
   });
 
-  const [employees, setEmployees] = useState<Employee[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.EMPLOYEES);
-    return saved ? JSON.parse(saved) : INITIAL_EMPLOYEES;
-  });
-
-  const [shifts, setShifts] = useState<WorkShift[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.SHIFTS);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch (e) {
-      console.error('Failed to load shifts from localStorage', e);
-    }
-    return INITIAL_WORK_SHIFTS;
-  });
-
-  const [dtrRecords, setDtrRecords] = useState<DTRRecord[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.DTR);
-    return saved ? JSON.parse(saved) : INITIAL_DTR_RECORDS;
-  });
-
-  const [dtrDrafts, setDtrDrafts] = useState<DTRDraftRecord[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.DTR_DRAFTS);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return parsed
-            .filter((d: DTRDraftRecord) => d.status !== 'COMMITTED')
-            .map((d: DTRDraftRecord) => {
-              // Automatically sanitize and re-evaluate anomalies so stale warnings (e.g. 5 punches on an edited 6 or 4 punch log) are resolved
-              if (d.isEdited || d.status === 'VALIDATED') {
-                const cleanAnomalies = evaluateDTRAnomalies({
-                  rawPunches: d.rawPunches || [],
-                  punchPairs: d.punchPairs || [],
-                  totalHours: d.totalHours || 0,
-                  hasMatchedEmployee: Boolean(d.employeeId),
-                  biometrixPersonId: d.biometrixPersonId,
-                  isEdited: true,
-                });
-                return {
-                  ...d,
-                  anomalies: cleanAnomalies,
-                  status: cleanAnomalies.some(a => a.severity === 'error') ? 'PENDING' : d.status,
-                };
-              }
-              return d;
-            });
-        }
-      } catch (e) {
-        console.error('Failed to parse saved drafts', e);
-      }
-    }
-    // Preload draft records from the sample biometric data
-    const initialRaw = parseRawBiometricsText(SAMPLE_BIOMETRIC_DATA_CSV);
-    return buildDraftDTRRecords(initialRaw, INITIAL_EMPLOYEES);
-  });
-
-  const [payPeriods, setPayPeriods] = useState<PayPeriod[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.PAY_PERIODS);
-    return saved ? JSON.parse(saved) : INITIAL_PAY_PERIODS;
-  });
-
-  const [payslips, setPayslips] = useState<Payslip[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.PAYSLIPS);
-    return saved ? JSON.parse(saved) : INITIAL_PAYSLIPS;
-  });
-
-  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.AUDIT);
-    return saved ? JSON.parse(saved) : INITIAL_AUDIT_LOGS;
-  });
-
-  const [companyProfile, setCompanyProfile] = useState<CompanyProfile>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.COMPANY_PROFILE);
-    return saved ? JSON.parse(saved) : INITIAL_COMPANY_PROFILE;
-  });
-
-  const [thirteenthMonthRecords, setThirteenthMonthRecords] = useState<ThirteenthMonthRecord[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.THIRTEENTH_MONTH);
-    return saved ? JSON.parse(saved) : INITIAL_THIRTEENTH_MONTH_RECORDS;
-  });
-
-  const [employeeDeductions, setEmployeeDeductions] = useState<EmployeeDeduction[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.DEDUCTIONS);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-      }
-    } catch (e) {
-      console.error('Failed to parse saved deductions', e);
-    }
-    return INITIAL_DEDUCTIONS;
-  });
+  // Pure Cloud Firestore state (no localStorage caching)
+  const [employees, setEmployees] = useState<Employee[]>(INITIAL_EMPLOYEES);
+  const [shifts, setShifts] = useState<WorkShift[]>(INITIAL_WORK_SHIFTS);
+  const [dtrRecords, setDtrRecords] = useState<DTRRecord[]>(INITIAL_DTR_RECORDS);
+  const [dtrDrafts, setDtrDrafts] = useState<DTRDraftRecord[]>([]);
+  const [payPeriods, setPayPeriods] = useState<PayPeriod[]>(INITIAL_PAY_PERIODS);
+  const [payslips, setPayslips] = useState<Payslip[]>(INITIAL_PAYSLIPS);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(INITIAL_AUDIT_LOGS);
+  const [companyProfile, setCompanyProfile] = useState<CompanyProfile>(INITIAL_COMPANY_PROFILE);
+  const [thirteenthMonthRecords, setThirteenthMonthRecords] = useState<ThirteenthMonthRecord[]>(INITIAL_THIRTEENTH_MONTH_RECORDS);
+  const [employeeDeductions, setEmployeeDeductions] = useState<EmployeeDeduction[]>(INITIAL_DEDUCTIONS);
 
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'info' | 'error' | 'warning' } | null>(null);
 
@@ -327,53 +264,129 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(currentUser));
   }, [currentUser]);
 
+  // Save session & auth state to localStorage
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SYSTEM_USERS, JSON.stringify(systemUsers));
-  }, [systemUsers]);
+    localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(currentUser));
+  }, [currentUser]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.IS_AUTHENTICATED, JSON.stringify(isAuthenticated));
   }, [isAuthenticated]);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.EMPLOYEES, JSON.stringify(employees));
-  }, [employees]);
+  // Cloud Firestore database connection & synchronization states
+  const [isCloudConnected, setIsCloudConnected] = useState<boolean>(true);
+  const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
+  const isCloudInitializedRef = React.useRef<boolean>(false);
 
+  // Test and initialize Firestore Cloud database connection on mount
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SHIFTS, JSON.stringify(shifts));
-  }, [shifts]);
+    let isMounted = true;
+    const initCloud = async () => {
+      try {
+        const connected = await testConnection();
+        if (!isMounted) return;
+        setIsCloudConnected(connected);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.DTR, JSON.stringify(dtrRecords));
-  }, [dtrRecords]);
+        if (connected && !isCloudInitializedRef.current) {
+          setIsCloudSyncing(true);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.DTR_DRAFTS, JSON.stringify(dtrDrafts));
-  }, [dtrDrafts]);
+          // 1. Employees
+          const remoteEmployees = await getCollectionDocs<Employee>(COLLECTIONS.EMPLOYEES);
+          if (remoteEmployees.length > 0) {
+            setEmployees(remoteEmployees);
+          } else {
+            await seedCollectionIfEmpty(COLLECTIONS.EMPLOYEES, INITIAL_EMPLOYEES);
+          }
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.PAY_PERIODS, JSON.stringify(payPeriods));
-  }, [payPeriods]);
+          // 2. Shifts
+          const remoteShifts = await getCollectionDocs<WorkShift>(COLLECTIONS.SHIFTS);
+          if (remoteShifts.length > 0) {
+            setShifts(remoteShifts);
+          } else {
+            await seedCollectionIfEmpty(COLLECTIONS.SHIFTS, INITIAL_WORK_SHIFTS);
+          }
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.PAYSLIPS, JSON.stringify(payslips));
-  }, [payslips]);
+          // 3. Deductions
+          const remoteDeductions = await getCollectionDocs<EmployeeDeduction>(COLLECTIONS.DEDUCTIONS);
+          if (remoteDeductions.length > 0) {
+            setEmployeeDeductions(remoteDeductions);
+          } else {
+            await seedCollectionIfEmpty(COLLECTIONS.DEDUCTIONS, INITIAL_DEDUCTIONS);
+          }
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.AUDIT, JSON.stringify(auditLogs));
-  }, [auditLogs]);
+          // 4. Pay Periods
+          const remotePeriods = await getCollectionDocs<PayPeriod>(COLLECTIONS.PAY_PERIODS);
+          if (remotePeriods.length > 0) {
+            setPayPeriods(remotePeriods);
+          } else {
+            await seedCollectionIfEmpty(COLLECTIONS.PAY_PERIODS, INITIAL_PAY_PERIODS);
+          }
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.COMPANY_PROFILE, JSON.stringify(companyProfile));
-  }, [companyProfile]);
+          // 5. Payslips
+          const remotePayslips = await getCollectionDocs<Payslip>(COLLECTIONS.PAYSLIPS);
+          if (remotePayslips.length > 0) {
+            setPayslips(remotePayslips);
+          } else {
+            await seedCollectionIfEmpty(COLLECTIONS.PAYSLIPS, INITIAL_PAYSLIPS);
+          }
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.THIRTEENTH_MONTH, JSON.stringify(thirteenthMonthRecords));
-  }, [thirteenthMonthRecords]);
+          // 6. Company Profile
+          const remoteCompany = await getCollectionDocs<CompanyProfile>(COLLECTIONS.COMPANY_PROFILE);
+          if (remoteCompany.length > 0 && remoteCompany[0]) {
+            setCompanyProfile(remoteCompany[0]);
+          } else {
+            await syncDocToFirestore(COLLECTIONS.COMPANY_PROFILE, 'default', INITIAL_COMPANY_PROFILE);
+          }
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.DEDUCTIONS, JSON.stringify(employeeDeductions));
-  }, [employeeDeductions]);
+          // 7. DTR Records
+          const remoteDTR = await getCollectionDocs<DTRRecord>(COLLECTIONS.DTR_RECORDS);
+          if (remoteDTR.length > 0) {
+            setDtrRecords(remoteDTR);
+          } else {
+            await seedCollectionIfEmpty(COLLECTIONS.DTR_RECORDS, INITIAL_DTR_RECORDS);
+          }
+
+          // 7b. DTR Drafts (Biometrics Staging)
+          const remoteDrafts = await getCollectionDocs<DTRDraftRecord>(COLLECTIONS.DTR_DRAFTS);
+          setDtrDrafts(remoteDrafts);
+
+          // 8. 13th Month Records
+          const remote13th = await getCollectionDocs<ThirteenthMonthRecord>(COLLECTIONS.THIRTEENTH_MONTH);
+          if (remote13th.length > 0) {
+            setThirteenthMonthRecords(remote13th);
+          } else {
+            await seedCollectionIfEmpty(COLLECTIONS.THIRTEENTH_MONTH, INITIAL_THIRTEENTH_MONTH_RECORDS, 'id');
+          }
+
+          // 9. System Users
+          const remoteUsers = await getCollectionDocs<SystemUser>(COLLECTIONS.SYSTEM_USERS);
+          if (remoteUsers.length > 0) {
+            setSystemUsers(remoteUsers);
+          } else {
+            await seedCollectionIfEmpty(COLLECTIONS.SYSTEM_USERS, INITIAL_SYSTEM_USERS);
+          }
+
+          // 10. Audit Logs
+          const remoteLogs = await getCollectionDocs<AuditLogEntry>(COLLECTIONS.AUDIT_LOGS);
+          if (remoteLogs.length > 0) {
+            setAuditLogs(remoteLogs);
+          }
+
+          if (isMounted) {
+            isCloudInitializedRef.current = true;
+            setIsCloudSyncing(false);
+          }
+        }
+      } catch (err) {
+        console.warn('[Firestore] Initialization notice:', err);
+        if (isMounted) setIsCloudSyncing(false);
+      }
+    };
+    initCloud();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Log Audit Entry Helper
   const logAudit = useCallback((data: {
@@ -400,6 +413,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     setAuditLogs(prev => [newEntry, ...prev]);
+    syncDocToFirestore(COLLECTIONS.AUDIT_LOGS, newEntry.id, newEntry);
   }, [currentUser]);
 
   const setCurrentUser = useCallback((user: CurrentUser) => {
@@ -451,6 +465,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const now = new Date().toISOString();
     setSystemUsers(prev => prev.map(u => u.id === userMatch.id ? { ...u, lastLoginAt: now } : u));
+    syncDocToFirestore(COLLECTIONS.SYSTEM_USERS, userMatch.id, { ...userMatch, lastLoginAt: now });
 
     logAudit({
       action: 'LOGIN',
@@ -487,6 +502,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setSystemUsers(prev => [newUser, ...prev]);
 
+    syncDocToFirestore(COLLECTIONS.SYSTEM_USERS, newUser.id, newUser).then(ok => {
+      if (!ok) showToast('Failed to save user account to database.', 'error');
+    });
+
     logAudit({
       action: 'CREATE',
       module: 'SYSTEM',
@@ -517,6 +536,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           avatarUrl: updated.avatarUrl ?? prevUser.avatarUrl,
         }));
       }
+
+      syncDocToFirestore(COLLECTIONS.SYSTEM_USERS, id, updated).then(ok => {
+        if (!ok) showToast('Failed to update user account in database.', 'error');
+      });
 
       return prev.map(u => u.id === id ? updated : u);
     });
@@ -551,6 +574,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     }
 
+    deleteDocFromFirestore(COLLECTIONS.SYSTEM_USERS, id).then(ok => {
+      if (!ok) showToast('Failed to delete user account from database.', 'error');
+    });
+
     setSystemUsers(prev => prev.filter(u => u.id !== id));
 
     logAudit({
@@ -583,6 +610,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const newEmployee: Employee = { ...employeeData, id };
     
     setEmployees(prev => [newEmployee, ...prev]);
+
+    syncDocToFirestore(COLLECTIONS.EMPLOYEES, newEmployee.id, newEmployee).then(ok => {
+      if (!ok) showToast('Failed to save employee to cloud database.', 'error');
+    });
 
     const changes: FieldDiff[] = Object.keys(employeeData).map(k => ({
       field: k,
@@ -635,6 +666,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       const updated = { ...existing, ...updates };
 
+      syncDocToFirestore(COLLECTIONS.EMPLOYEES, id, updated).then(ok => {
+        if (!ok) showToast('Failed to update employee in database.', 'error');
+      });
+
       if (diffs.length > 0) {
         logAudit({
           action: updates.status && updates.status !== existing.status ? 'STATUS_CHANGE' : 'UPDATE',
@@ -655,6 +690,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [logAudit, showToast]);
 
   const deleteEmployee = useCallback((id: string) => {
+    deleteDocFromFirestore(COLLECTIONS.EMPLOYEES, id).then(ok => {
+      if (!ok) showToast('Failed to delete employee from database.', 'error');
+    });
+
     setEmployees(prev => {
       const target = prev.find(e => e.id === id);
       if (!target) return prev;
@@ -869,6 +908,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     });
 
+    if (updatedRecord) {
+      syncDocToFirestore(COLLECTIONS.DTR_RECORDS, (updatedRecord as DTRRecord).id, updatedRecord).then(ok => {
+        if (!ok) showToast('Failed to save punch to database.', 'error');
+      });
+    }
+
     showToast(`Punch ${type} registered at ${timeStr} for ${emp?.firstName || 'employee'}`);
     return updatedRecord!;
   }, [employees, currentUser, logAudit, showToast]);
@@ -920,6 +965,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         changes: diffs,
       });
 
+      syncDocToFirestore(COLLECTIONS.DTR_RECORDS, id, updated).then(ok => {
+        if (!ok) showToast('Failed to update DTR in database.', 'error');
+      });
+
       const next = [...prev];
       next[idx] = updated;
       return next;
@@ -930,6 +979,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const batchUpdateDTRRecords = useCallback((recordsToUpsert: DTRRecord[], adjustmentReason?: string) => {
     if (!recordsToUpsert || recordsToUpsert.length === 0) return;
+
+    batchSyncDocsToFirestore(COLLECTIONS.DTR_RECORDS, recordsToUpsert).then(ok => {
+      if (!ok) showToast('Failed to save batch DTR records to database.', 'error');
+    });
 
     setDtrRecords(prev => {
       const upsertMap = new Map(recordsToUpsert.map(r => [r.id, r]));
@@ -973,7 +1026,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       targetName: `Attendance Adjustments (${recordsToUpsert.length} records)`,
       description: adjustmentReason || `Updated ${recordsToUpsert.length} attendance record(s) during payslip adjustment.`,
     });
-  }, [currentUser, logAudit]);
+  }, [currentUser, logAudit, showToast]);
 
   const generateBulkDTR = useCallback((startDate: string, endDate: string, employeeIds?: string[]) => {
     const targetEmps = employeeIds && employeeIds.length > 0 
@@ -981,6 +1034,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       : employees.filter(e => e.status === 'active');
 
     const generated = generateSampleDTR(targetEmps, startDate, endDate);
+
+    batchSyncDocsToFirestore(COLLECTIONS.DTR_RECORDS, generated).then(ok => {
+      if (!ok) showToast('Failed to save bulk DTR records to database.', 'error');
+    });
 
     setDtrRecords(prev => {
       // Filter out overlapping IDs
@@ -1016,6 +1073,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const newKeys = new Set(newDrafts.map(d => `${d.biometrixPersonId}__${d.date}`));
       const kept = prev.filter(p => !newKeys.has(`${p.biometrixPersonId}__${p.date}`));
       return [...newDrafts, ...kept];
+    });
+
+    // Save imported drafts to Cloud Firestore
+    batchSyncDocsToFirestore(COLLECTIONS.DTR_DRAFTS, newDrafts).then(ok => {
+      if (!ok) showToast('Failed to save biometric drafts to cloud database.', 'error');
     });
 
     logAudit({
@@ -1078,6 +1140,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         isEdited: true,
       };
 
+      syncDocToFirestore(COLLECTIONS.DTR_DRAFTS, draftId, updated);
+
       const next = [...prev];
       next[idx] = updated;
       return next;
@@ -1095,6 +1159,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return d;
       }
       validated = true;
+      syncDocToFirestore(COLLECTIONS.DTR_DRAFTS, draftId, { status: 'VALIDATED' });
       return { ...d, status: 'VALIDATED' };
     }));
 
@@ -1107,6 +1172,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const rejectDraftRecord = useCallback((draftId: string, reason: string = 'Rejected during supervisor verification') => {
     setDtrDrafts(prev => prev.map(d => (d.id === draftId ? { ...d, status: 'REJECTED', rejectionReason: reason } : d)));
+    syncDocToFirestore(COLLECTIONS.DTR_DRAFTS, draftId, { status: 'REJECTED', rejectionReason: reason });
     showToast('Draft record rejected.', 'warning');
   }, [showToast]);
 
@@ -1181,8 +1247,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
 
     // Remove committed drafts from draft staging (they are now in official DTR)
-    const committedIds = new Set(targetDrafts.map(d => d.id));
+    const committedIds = new Set<string>(targetDrafts.map(d => d.id));
     setDtrDrafts(prev => prev.filter(d => !committedIds.has(d.id)));
+
+    // Direct Firestore persistence: save official DTR records and remove drafts
+    batchSyncDocsToFirestore(COLLECTIONS.DTR_RECORDS, newDTRRecords).then(ok => {
+      if (!ok) showToast('Failed to save official DTR records to cloud database.', 'error');
+    });
+
+    const committedIdsList = Array.from(committedIds);
+    if (committedIdsList.length > 0) {
+      batchDeleteDocsFromFirestore(COLLECTIONS.DTR_DRAFTS, committedIdsList);
+    }
 
     logAudit({
       action: 'DTR_BIOMETRIC_IMPORT',
@@ -1197,10 +1273,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [dtrDrafts, employees, currentUser, logAudit, showToast]);
 
   const clearDrafts = useCallback(() => {
+    const allDraftIds = dtrDrafts.map(d => d.id);
+    if (allDraftIds.length > 0) {
+      batchDeleteDocsFromFirestore(COLLECTIONS.DTR_DRAFTS, allDraftIds);
+    }
     setDtrDrafts([]);
-    localStorage.removeItem(STORAGE_KEYS.DTR_DRAFTS);
     showToast('All DTR draft records cleared.', 'info');
-  }, [showToast]);
+  }, [dtrDrafts, showToast]);
 
   const quickLoadSampleBiometrics = useCallback(() => {
     return importBiometricPunches(SAMPLE_BIOMETRIC_DATA_CSV);
@@ -1286,7 +1365,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         };
         const gross = (payslip.basicPay || 0) + (payslip.overtimePay || 0) + (payslip.holidayPay || 0) + (payslip.wdoPay || 0) + (payslip.nightDiffPay || 0) + (payslip.totalAllowances || 0);
         const withholdingTaxAmount = companyProfile.enableWithholdingTax ? (payslip.withholdingTax || 0) : 0;
-        const totalDed = (payslip.lateUndertimeDeduction || 0) + (payslip.sssDeduction || 0) + (payslip.philhealthDeduction || 0) + (payslip.pagibigDeduction || 0) + withholdingTaxAmount + (payslip.mlsDeduction || 0) + (payslip.cashAdvanceDeduction || 0) + (payslip.totalOtherDeductions || 0);
+        const totalDed = (payslip.lateUndertimeDeduction || 0) + (payslip.sssDeduction || 0) + (payslip.philhealthDeduction || 0) + (payslip.pagibigDeduction || 0) + withholdingTaxAmount + (payslip.cashAdvanceDeduction || 0) + (payslip.totalOtherDeductions || 0);
         payslip.grossPay = Math.round(gross * 100) / 100;
         payslip.totalDeductions = Math.round(totalDed * 100) / 100;
         payslip.netPay = Math.max(0, Math.round((payslip.grossPay - payslip.totalDeductions) * 100) / 100);
@@ -1305,22 +1384,93 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return [...newPayslips, ...filtered];
     });
 
+    // Synchronize deduction ledger records with newly generated payslips
+    setEmployeeDeductions(prevDeds => {
+      let hasChanges = false;
+      const nextDeds = prevDeds.map(ded => {
+        const empSlip = newPayslips.find(ps => ps.employeeId === ded.employeeId);
+        if (!empSlip) return ded;
+
+        const matchedItem = empSlip.otherDeductions?.find(
+          od => od.name.includes(ded.deductionId) ||
+                (ded.description && od.name.toLowerCase().includes(ded.description.toLowerCase()))
+        );
+        const amount = matchedItem && matchedItem.amount > 0 ? Math.round(matchedItem.amount * 100) / 100 : 0;
+        const existingEntryIndex = ded.ledger.findIndex(
+          entry => entry.payslipId === empSlip.id || (entry.payPeriodId === payPeriodId && entry.type === 'CUTOFF_DEDUCTION')
+        );
+
+        if (amount > 0) {
+          if (existingEntryIndex >= 0) {
+            if (ded.ledger[existingEntryIndex].credit !== amount) {
+              hasChanges = true;
+              const newLedger = [...ded.ledger];
+              newLedger[existingEntryIndex] = {
+                ...newLedger[existingEntryIndex],
+                credit: amount,
+                payslipId: empSlip.id,
+                payPeriodId,
+              };
+              return recalculateDeductionLedger({ ...ded, ledger: newLedger });
+            }
+          } else {
+            hasChanges = true;
+            const newEntry: DeductionLedgerEntry = {
+              id: `led-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+              deductionId: ded.id,
+              date: period.payoutDate || period.endDate || new Date().toISOString().split('T')[0],
+              reference: payPeriodId,
+              description: `Payroll Cutoff Deduction (${period.name || payPeriodId})`,
+              type: 'CUTOFF_DEDUCTION',
+              debit: 0,
+              credit: amount,
+              runningBalance: 0,
+              remarks: `Cutoff deduction via payroll register`,
+              payslipId: empSlip.id,
+              payPeriodId,
+              isManual: false,
+              createdAt: new Date().toISOString(),
+            };
+            return recalculateDeductionLedger({ ...ded, ledger: [...ded.ledger, newEntry] });
+          }
+        } else if (existingEntryIndex >= 0) {
+          hasChanges = true;
+          const newLedger = ded.ledger.filter((_, idx) => idx !== existingEntryIndex);
+          return recalculateDeductionLedger({ ...ded, ledger: newLedger });
+        }
+
+        return ded;
+      });
+
+      return hasChanges ? nextDeds : prevDeds;
+    });
+
     // Update PayPeriod summary
+    const updatedPeriod = {
+      ...period,
+      totalGrossPay: Math.round(totalGross * 100) / 100,
+      totalDeductions: Math.round(totalDeductions * 100) / 100,
+      totalNetPay: Math.round(totalNet * 100) / 100,
+      processedEmployeesCount: activeEmps.length,
+      status: (period.status === 'Draft' ? 'Pending Review' : period.status) as PayPeriod['status'],
+    };
+
     setPayPeriods(prev =>
       prev.map(p => {
         if (p.id === payPeriodId) {
-          return {
-            ...p,
-            totalGrossPay: Math.round(totalGross * 100) / 100,
-            totalDeductions: Math.round(totalDeductions * 100) / 100,
-            totalNetPay: Math.round(totalNet * 100) / 100,
-            processedEmployeesCount: activeEmps.length,
-            status: p.status === 'Draft' ? 'Pending Review' : p.status,
-          };
+          return updatedPeriod;
         }
         return p;
       })
     );
+
+    // Direct Firestore persistence
+    batchSyncDocsToFirestore(COLLECTIONS.PAYSLIPS, newPayslips).then(ok => {
+      if (!ok) showToast('Failed to save payslips to cloud database.', 'error');
+    });
+    syncDocToFirestore(COLLECTIONS.PAY_PERIODS, payPeriodId, updatedPeriod).then(ok => {
+      if (!ok) showToast('Failed to save payroll register to database.', 'error');
+    });
 
     logAudit({
       action: 'PAYROLL_CALCULATE',
@@ -1345,26 +1495,54 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (!targetPeriod) return;
 
     const countDeleted = payslips.filter(ps => ps.payPeriodId === payPeriodId).length;
+    const slipsToDelete = payslips.filter(ps => ps.payPeriodId === payPeriodId).map(ps => ps.id);
+    if (slipsToDelete.length > 0) {
+      batchDeleteDocsFromFirestore(COLLECTIONS.PAYSLIPS, slipsToDelete);
+    }
 
     // Delete all payslips for this period
     setPayslips(prev => prev.filter(ps => ps.payPeriodId !== payPeriodId));
+
+    // Remove deduction payments tied to this cutoff period
+    setEmployeeDeductions(prevDeds => {
+      let hasChanges = false;
+      const nextDeds = prevDeds.map(ded => {
+        const hasMatchingEntry = ded.ledger.some(
+          entry => entry.payPeriodId === payPeriodId || (entry.reference === payPeriodId && entry.type === 'CUTOFF_DEDUCTION')
+        );
+        if (!hasMatchingEntry) return ded;
+
+        hasChanges = true;
+        const newLedger = ded.ledger.filter(
+          entry => entry.payPeriodId !== payPeriodId && !(entry.reference === payPeriodId && entry.type === 'CUTOFF_DEDUCTION')
+        );
+        return recalculateDeductionLedger({ ...ded, ledger: newLedger });
+      });
+      return hasChanges ? nextDeds : prevDeds;
+    });
+
+    const resetPeriod = {
+      ...targetPeriod,
+      totalGrossPay: 0,
+      totalDeductions: 0,
+      totalNetPay: 0,
+      processedEmployeesCount: 0,
+      status: 'Draft' as const,
+    };
 
     // Reset the pay period summary
     setPayPeriods(prev =>
       prev.map(p => {
         if (p.id === payPeriodId) {
-          return {
-            ...p,
-            totalGrossPay: 0,
-            totalDeductions: 0,
-            totalNetPay: 0,
-            processedEmployeesCount: 0,
-            status: 'Draft',
-          };
+          return resetPeriod;
         }
         return p;
       })
     );
+
+    syncDocToFirestore(COLLECTIONS.PAY_PERIODS, payPeriodId, resetPeriod).then(ok => {
+      if (!ok) showToast('Failed to reset pay period in database.', 'error');
+    });
 
     logAudit({
       action: 'PAYROLL_CLEAR',
@@ -1382,9 +1560,34 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (!targetPeriod) return;
 
     const countSlips = payslips.filter(ps => ps.payPeriodId === payPeriodId).length;
+    const slipsToDelete = payslips.filter(ps => ps.payPeriodId === payPeriodId).map(ps => ps.id);
+    if (slipsToDelete.length > 0) {
+      batchDeleteDocsFromFirestore(COLLECTIONS.PAYSLIPS, slipsToDelete);
+    }
+    deleteDocFromFirestore(COLLECTIONS.PAY_PERIODS, payPeriodId).then(ok => {
+      if (!ok) showToast('Failed to delete pay period from database.', 'error');
+    });
 
     // Remove all associated payslips
     setPayslips(prev => prev.filter(ps => ps.payPeriodId !== payPeriodId));
+
+    // Remove deduction payments tied to this cutoff period
+    setEmployeeDeductions(prevDeds => {
+      let hasChanges = false;
+      const nextDeds = prevDeds.map(ded => {
+        const hasMatchingEntry = ded.ledger.some(
+          entry => entry.payPeriodId === payPeriodId || (entry.reference === payPeriodId && entry.type === 'CUTOFF_DEDUCTION')
+        );
+        if (!hasMatchingEntry) return ded;
+
+        hasChanges = true;
+        const newLedger = ded.ledger.filter(
+          entry => entry.payPeriodId !== payPeriodId && !(entry.reference === payPeriodId && entry.type === 'CUTOFF_DEDUCTION')
+        );
+        return recalculateDeductionLedger({ ...ded, ledger: newLedger });
+      });
+      return hasChanges ? nextDeds : prevDeds;
+    });
 
     // Remove the pay period
     setPayPeriods(prev => prev.filter(p => p.id !== payPeriodId));
@@ -1432,6 +1635,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return remaining;
     });
 
+    // Remove payment in deduction if payslip with deduction has been removed
+    setEmployeeDeductions(prevDeds => {
+      let hasChanges = false;
+      const nextDeds = prevDeds.map(ded => {
+        const hasMatchingEntry = ded.ledger.some(
+          entry => entry.payslipId === payslipId || (ded.employeeId === targetPayslip.employeeId && entry.payPeriodId === targetPayslip.payPeriodId && entry.type === 'CUTOFF_DEDUCTION')
+        );
+        if (!hasMatchingEntry) return ded;
+
+        hasChanges = true;
+        const newLedger = ded.ledger.filter(
+          entry => entry.payslipId !== payslipId && !(ded.employeeId === targetPayslip.employeeId && entry.payPeriodId === targetPayslip.payPeriodId && entry.type === 'CUTOFF_DEDUCTION')
+        );
+        return recalculateDeductionLedger({ ...ded, ledger: newLedger });
+      });
+      return hasChanges ? nextDeds : prevDeds;
+    });
+
+    deleteDocFromFirestore(COLLECTIONS.PAYSLIPS, payslipId).then(ok => {
+      if (!ok) showToast('Failed to delete payslip from database.', 'error');
+    });
+
     logAudit({
       action: 'DELETE',
       module: 'PAYROLL',
@@ -1452,6 +1677,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // Collect affected period IDs
     const affectedPeriodIds = new Set(targetPayslips.map(ps => ps.payPeriodId));
 
+    batchDeleteDocsFromFirestore(COLLECTIONS.PAYSLIPS, payslipIds).then(ok => {
+      if (!ok) showToast('Failed to delete selected payslips from database.', 'error');
+    });
+
     setPayslips(prev => {
       const remaining = prev.filter(ps => !idsSet.has(ps.id));
 
@@ -1463,19 +1692,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             const totalGross = periodSlips.reduce((sum, s) => sum + s.grossPay, 0);
             const totalDeds = periodSlips.reduce((sum, s) => sum + s.totalDeductions, 0);
             const totalNet = periodSlips.reduce((sum, s) => sum + s.netPay, 0);
-            return {
+            const updatedP = {
               ...p,
               totalGrossPay: Math.round(totalGross * 100) / 100,
               totalDeductions: Math.round(totalDeds * 100) / 100,
               totalNetPay: Math.round(totalNet * 100) / 100,
               processedEmployeesCount: periodSlips.length,
             };
+            syncDocToFirestore(COLLECTIONS.PAY_PERIODS, p.id, updatedP);
+            return updatedP;
           }
           return p;
         })
       );
 
       return remaining;
+    });
+
+    // Remove payments in deduction for all deleted payslips
+    setEmployeeDeductions(prevDeds => {
+      let hasChanges = false;
+      const nextDeds = prevDeds.map(ded => {
+        const hasMatchingEntry = ded.ledger.some(entry => entry.payslipId && idsSet.has(entry.payslipId));
+        if (!hasMatchingEntry) return ded;
+
+        hasChanges = true;
+        const newLedger = ded.ledger.filter(entry => !entry.payslipId || !idsSet.has(entry.payslipId));
+        return recalculateDeductionLedger({ ...ded, ledger: newLedger });
+      });
+      return hasChanges ? nextDeds : prevDeds;
     });
 
     logAudit({
@@ -1501,6 +1746,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return p;
       })
     );
+
+    if (updatedPeriodObj) {
+      syncDocToFirestore(COLLECTIONS.PAY_PERIODS, payPeriodId, updatedPeriodObj).then(ok => {
+        if (!ok) showToast('Failed to update pay period in database.', 'error');
+      });
+    }
 
     if (updates.holidays && updatedPeriodObj) {
       const periodHolidays = updates.holidays;
@@ -1544,6 +1795,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const target = prev.find(p => p.id === payPeriodId);
       if (!target) return prev;
 
+      const updated = { ...target, status };
+      syncDocToFirestore(COLLECTIONS.PAY_PERIODS, payPeriodId, updated).then(ok => {
+        if (!ok) showToast('Failed to update pay period status in database.', 'error');
+      });
+
       logAudit({
         action: status === 'Approved' ? 'PAYROLL_APPROVE' : 'STATUS_CHANGE',
         module: 'PAYROLL',
@@ -1553,17 +1809,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         changes: [{ field: 'status', fieldLabel: 'Payroll Status', oldValue: target.status, newValue: status }],
       });
 
-      return prev.map(p => (p.id === payPeriodId ? { ...p, status } : p));
+      return prev.map(p => (p.id === payPeriodId ? updated : p));
     });
 
     // Also update constituent payslips
     setPayslips(prev =>
       prev.map(ps => {
         if (ps.payPeriodId === payPeriodId) {
-          return {
-            ...ps,
-            status: status === 'Approved' ? 'Approved' : 'Draft',
-          };
+          const updSlip = { ...ps, status: status === 'Approved' ? 'Approved' as const : 'Draft' as const };
+          syncDocToFirestore(COLLECTIONS.PAYSLIPS, ps.id, updSlip);
+          return updSlip;
         }
         return ps;
       })
@@ -1592,10 +1847,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // Recalculate gross and net if components were adjusted
       const gross = (updated.basicPay || 0) + (updated.overtimePay || 0) + (updated.holidayPay || 0) + (updated.wdoPay || 0) + (updated.nightDiffPay || 0) + (updated.totalAllowances || 0);
       const withholdingTaxAmount = companyProfile.enableWithholdingTax ? (updated.withholdingTax || 0) : 0;
-      const totalDed = (updated.lateUndertimeDeduction || 0) + (updated.sssDeduction || 0) + (updated.philhealthDeduction || 0) + (updated.pagibigDeduction || 0) + withholdingTaxAmount + (updated.mlsDeduction || 0) + (updated.cashAdvanceDeduction || 0) + (updated.totalOtherDeductions || 0);
+      const totalDed = (updated.lateUndertimeDeduction || 0) + (updated.sssDeduction || 0) + (updated.philhealthDeduction || 0) + (updated.pagibigDeduction || 0) + withholdingTaxAmount + (updated.cashAdvanceDeduction || 0) + (updated.totalOtherDeductions || 0);
       updated.grossPay = Math.round(gross * 100) / 100;
       updated.totalDeductions = Math.round(totalDed * 100) / 100;
       updated.netPay = Math.max(0, Math.round((updated.grossPay - updated.totalDeductions) * 100) / 100);
+
+      syncDocToFirestore(COLLECTIONS.PAYSLIPS, payslipId, updated).then(ok => {
+        if (!ok) showToast('Failed to update payslip in database.', 'error');
+      });
 
       const diffs: FieldDiff[] = [];
       (Object.keys(updates) as (keyof Payslip)[]).forEach(k => {
@@ -1643,8 +1902,79 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return next;
     });
 
+    // Synchronize employee deductions module when otherDeductions are modified
+    if (updates.otherDeductions !== undefined) {
+      const targetPayslip = payslips.find(ps => ps.id === payslipId);
+      const empId = targetPayslip?.employeeId;
+      const periodId = targetPayslip?.payPeriodId;
+
+      if (empId && periodId) {
+        setEmployeeDeductions(prevDeds => {
+          let hasChanges = false;
+          const nextDeds = prevDeds.map(ded => {
+            if (ded.employeeId !== empId) return ded;
+
+            // Check if updated payslip has a deduction matching this account
+            const matchedItem = updates.otherDeductions?.find(
+              od => od.name.includes(ded.deductionId) ||
+                    (ded.description && od.name.toLowerCase().includes(ded.description.toLowerCase()))
+            );
+            const newAmount = matchedItem && matchedItem.amount > 0 ? Math.round(matchedItem.amount * 100) / 100 : 0;
+
+            const existingEntryIndex = ded.ledger.findIndex(
+              entry => entry.payslipId === payslipId || (entry.payPeriodId === periodId && entry.type === 'CUTOFF_DEDUCTION')
+            );
+
+            if (newAmount > 0) {
+              if (existingEntryIndex >= 0) {
+                if (ded.ledger[existingEntryIndex].credit !== newAmount) {
+                  hasChanges = true;
+                  const newLedger = [...ded.ledger];
+                  newLedger[existingEntryIndex] = {
+                    ...newLedger[existingEntryIndex],
+                    credit: newAmount,
+                    payslipId,
+                    payPeriodId: periodId,
+                  };
+                  return recalculateDeductionLedger({ ...ded, ledger: newLedger });
+                }
+              } else {
+                hasChanges = true;
+                const period = payPeriods.find(p => p.id === periodId);
+                const newEntry: DeductionLedgerEntry = {
+                  id: `led-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                  deductionId: ded.id,
+                  date: period?.payoutDate || period?.endDate || new Date().toISOString().split('T')[0],
+                  reference: periodId,
+                  description: `Payroll Cutoff Deduction (${period?.name || periodId})`,
+                  type: 'CUTOFF_DEDUCTION',
+                  debit: 0,
+                  credit: newAmount,
+                  runningBalance: 0,
+                  remarks: `Cutoff deduction via payslip ${payslipId}`,
+                  payslipId,
+                  payPeriodId: periodId,
+                  isManual: false,
+                  createdAt: new Date().toISOString(),
+                };
+                return recalculateDeductionLedger({ ...ded, ledger: [...ded.ledger, newEntry] });
+              }
+            } else if (existingEntryIndex >= 0) {
+              hasChanges = true;
+              const newLedger = ded.ledger.filter((_, idx) => idx !== existingEntryIndex);
+              return recalculateDeductionLedger({ ...ded, ledger: newLedger });
+            }
+
+            return ded;
+          });
+
+          return hasChanges ? nextDeds : prevDeds;
+        });
+      }
+    }
+
     showToast('Payslip updated and recalculation applied!');
-  }, [logAudit, showToast]);
+  }, [logAudit, showToast, payslips, payPeriods]);
 
   const createPayPeriod = useCallback((periodData: Omit<PayPeriod, 'id' | 'totalGrossPay' | 'totalDeductions' | 'totalNetPay' | 'processedEmployeesCount' | 'createdAt'>): PayPeriod => {
     const id = `PP-${Date.now()}`;
@@ -1659,6 +1989,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     setPayPeriods(prev => [newPeriod, ...prev]);
+
+    syncDocToFirestore(COLLECTIONS.PAY_PERIODS, newPeriod.id, newPeriod).then(ok => {
+      if (!ok) showToast('Failed to save pay period to database.', 'error');
+    });
 
     // Automatically generate initial payslips for active employees for this new cutoff
     generatePayrollForPeriod(newPeriod.id, newPeriod, true);
@@ -1727,6 +2061,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return [newRecord, ...filtered].sort((a, b) => b.year - a.year);
     });
 
+    syncDocToFirestore(COLLECTIONS.THIRTEENTH_MONTH, newRecord.id, newRecord).then(ok => {
+      if (!ok) showToast('Failed to save 13th month record to database.', 'error');
+    });
+
     logAudit({
       action: 'PAYROLL_CALCULATE',
       module: 'PAYROLL',
@@ -1743,12 +2081,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setThirteenthMonthRecords(prev => prev.map(r => {
       if (r.year === year) {
         const updatedItems = r.items.map(item => ({ ...item, status: 'Approved' as const }));
-        return {
+        const updatedRecord = {
           ...r,
-          status: 'Approved',
+          status: 'Approved' as const,
           approvedAt: new Date().toISOString(),
           items: updatedItems,
         };
+        syncDocToFirestore(COLLECTIONS.THIRTEENTH_MONTH, `13TH-${year}`, updatedRecord).then(ok => {
+          if (!ok) showToast('Failed to update 13th month status in database.', 'error');
+        });
+        return updatedRecord;
       }
       return r;
     }));
@@ -1765,6 +2107,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [logAudit, showToast]);
 
   const deleteThirteenthMonthRecord = useCallback((year: number) => {
+    deleteDocFromFirestore(COLLECTIONS.THIRTEENTH_MONTH, `13TH-${year}`).then(ok => {
+      if (!ok) showToast('Failed to delete 13th month record from database.', 'error');
+    });
+
     setThirteenthMonthRecords(prev => prev.filter(r => r.year !== year));
 
     logAudit({
@@ -1777,6 +2123,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     showToast(`13th Month Pay record for year ${year} deleted.`, 'info');
   }, [logAudit, showToast]);
+
 
   // ==========================================
   // DEDUCTION & LOAN ACTIONS
@@ -1864,6 +2211,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     setEmployeeDeductions(prev => [newDeduction, ...prev]);
 
+    syncDocToFirestore(COLLECTIONS.DEDUCTIONS, newDeduction.id, newDeduction).then(ok => {
+      if (!ok) showToast('Failed to save deduction to cloud database.', 'error');
+    });
+
     logAudit({
       action: 'DEDUCTION_CREATE',
       module: 'DEDUCTION',
@@ -1895,6 +2246,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }
 
+      syncDocToFirestore(COLLECTIONS.DEDUCTIONS, id, nextDeduction).then(ok => {
+        if (!ok) showToast('Failed to update deduction in database.', 'error');
+      });
+
       logAudit({
         action: 'DEDUCTION_UPDATE',
         module: 'DEDUCTION',
@@ -1912,6 +2267,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [logAudit, showToast]);
 
   const deleteEmployeeDeduction = useCallback((id: string) => {
+    deleteDocFromFirestore(COLLECTIONS.DEDUCTIONS, id).then(ok => {
+      if (!ok) showToast('Failed to delete deduction from database.', 'error');
+    });
+
     setEmployeeDeductions(prev => {
       const target = prev.find(d => d.id === id);
       if (!target) return prev;
@@ -1941,6 +2300,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       type?: 'PAYMENT' | 'CUTOFF_DEDUCTION';
       payslipId?: string;
       payPeriodId?: string;
+      thirteenthMonthYear?: number;
       isManual?: boolean;
     }
   ) => {
@@ -1958,6 +2318,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       const entryType = payment.type || 'PAYMENT';
       const isManual = payment.isManual !== undefined ? payment.isManual : (entryType === 'PAYMENT');
+      const thYear = payment.thirteenthMonthYear || (payment.reference?.startsWith('13TH-') ? parseInt(payment.reference.replace('13TH-', ''), 10) : undefined);
+
       const newEntry: DeductionLedgerEntry = {
         id: `led-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
         deductionId: deduction.id,
@@ -1971,6 +2333,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         remarks: payment.remarks?.trim() || undefined,
         payslipId: payment.payslipId,
         payPeriodId: payment.payPeriodId,
+        thirteenthMonthYear: thYear,
         isManual,
         createdAt: new Date().toISOString(),
       };
@@ -1983,6 +2346,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ledger: [...deduction.ledger, newEntry],
         updatedAt: new Date().toISOString(),
       };
+
+      syncDocToFirestore(COLLECTIONS.DEDUCTIONS, updatedDeduction.id, updatedDeduction).then(ok => {
+        if (!ok) showToast('Failed to save payment record to database.', 'error');
+      });
 
       logAudit({
         action: 'DEDUCTION_PAYMENT',
@@ -2000,6 +2367,78 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     showToast('Payment recorded and ledger updated!', 'success');
   }, [logAudit, showToast]);
 
+  const adjustDeductionPrincipal = useCallback((
+    deductionId: string,
+    adjustment: {
+      amount: number;
+      date: string;
+      reason?: string;
+      reference?: string;
+      remarks?: string;
+      payPeriodId?: string;
+    }
+  ) => {
+    setEmployeeDeductions(prev => {
+      const idx = prev.findIndex(d => d.id === deductionId || d.deductionId === deductionId);
+      if (idx < 0) return prev;
+
+      const deduction = prev[idx];
+      const adjAmount = Math.max(0, Number(adjustment.amount) || 0);
+      if (adjAmount <= 0) return prev;
+
+      const newPrincipal = Math.round((deduction.amount + adjAmount) * 100) / 100;
+      const newTotalAmount = Math.round((deduction.totalAmount + adjAmount) * 100) / 100;
+      const newRunningBalance = Math.round((deduction.runningBalance + adjAmount) * 100) / 100;
+
+      const ref = adjustment.reference?.trim() || `ADJ-${Math.floor(100000 + Math.random() * 900000)}`;
+      const desc = adjustment.reason?.trim() || 'Principal Increment Adjustment';
+
+      const newEntry: DeductionLedgerEntry = {
+        id: `led-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+        deductionId: deduction.id,
+        date: adjustment.date || new Date().toISOString().split('T')[0],
+        reference: ref,
+        description: desc,
+        type: 'ADJUSTMENT',
+        debit: adjAmount,
+        credit: 0,
+        runningBalance: newRunningBalance,
+        remarks: adjustment.remarks?.trim() || undefined,
+        payPeriodId: adjustment.payPeriodId,
+        isManual: true,
+        createdAt: new Date().toISOString(),
+      };
+
+      const updatedDeduction: EmployeeDeduction = {
+        ...deduction,
+        amount: newPrincipal,
+        totalAmount: newTotalAmount,
+        runningBalance: newRunningBalance,
+        status: newRunningBalance > 0 ? 'Active' : deduction.status,
+        ledger: [...deduction.ledger, newEntry],
+        updatedAt: new Date().toISOString(),
+      };
+
+      syncDocToFirestore(COLLECTIONS.DEDUCTIONS, updatedDeduction.id, updatedDeduction).then(ok => {
+        if (!ok) showToast('Failed to save principal adjustment to database.', 'error');
+      });
+
+      logAudit({
+        action: 'DEDUCTION_UPDATE',
+        module: 'DEDUCTION',
+        targetId: deduction.deductionId,
+        targetName: `${deduction.deductionId} - ${deduction.employeeName}`,
+        description: `Added principal adjustment of ₱${adjAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} on ${deduction.deductionId} (${deduction.description}). Reason: ${desc}. New balance: ₱${newRunningBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}.`,
+      });
+
+      const next = [...prev];
+      next[idx] = updatedDeduction;
+      return next;
+    });
+
+    showToast(`Principal adjusted by +₱${Number(adjustment.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}. Balance updated!`, 'success');
+  }, [logAudit, showToast]);
+
   const deleteDeductionLedgerEntry = useCallback((deductionId: string, entryId: string) => {
     setEmployeeDeductions(prev => {
       const idx = prev.findIndex(d => d.id === deductionId || d.deductionId === deductionId);
@@ -2007,50 +2446,195 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       const deduction = prev[idx];
       // Do not allow deleting initial grant entry
-      const targetEntry = deduction.ledger.find(e => e.id === entryId);
+      const targetEntry = deduction.ledger.find(e => e.id === entryId || (e.reference && e.reference === entryId));
       if (!targetEntry || targetEntry.type === 'GRANT') {
         return prev;
       }
 
-      // Rebuild ledger running balance from scratch
-      const filteredLedger = deduction.ledger.filter(e => e.id !== entryId);
-      let balance = 0;
-      let totalPaid = 0;
+      const targetId = targetEntry.id;
+      const filteredLedger = deduction.ledger.filter(e => e.id !== targetId);
 
-      const recalculatedLedger = filteredLedger.map((entry, eIdx) => {
-        if (eIdx === 0 && entry.type === 'GRANT') {
-          balance = entry.debit;
-          return { ...entry, runningBalance: balance };
-        }
-        balance = Math.max(0, balance + entry.debit - entry.credit);
-        totalPaid += entry.credit;
-        return { ...entry, runningBalance: Math.round(balance * 100) / 100 };
+      // Rebuild ledger running balance from scratch using standard calculation engine
+      const updatedDeduction = recalculateDeductionLedger({
+        ...deduction,
+        ledger: filteredLedger,
       });
 
-      const updatedDeduction: EmployeeDeduction = {
-        ...deduction,
-        totalPaid: Math.round(totalPaid * 100) / 100,
-        runningBalance: Math.round(balance * 100) / 100,
-        status: balance <= 0 ? 'Completed' : 'Active',
-        ledger: recalculatedLedger,
-        updatedAt: new Date().toISOString(),
-      };
+      syncDocToFirestore(COLLECTIONS.DEDUCTIONS, updatedDeduction.id, updatedDeduction).then(ok => {
+        if (!ok) showToast('Failed to update deduction ledger in database.', 'error');
+      });
+
+      logAudit({
+        action: 'DEDUCTION_UPDATE',
+        module: 'DEDUCTION',
+        targetId: deduction.deductionId,
+        targetName: `${deduction.deductionId} - ${deduction.employeeName}`,
+        description: `Deleted manual payment entry (₱${(targetEntry.credit || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}) from ${deduction.deductionId}. Running balance recalculated to ₱${updatedDeduction.runningBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}.`,
+      });
 
       const next = [...prev];
       next[idx] = updatedDeduction;
       return next;
     });
 
-    showToast('Ledger entry removed and balance adjusted.', 'info');
-  }, [showToast]);
+    showToast('Payment entry deleted and balance recalculated!', 'info');
+  }, [logAudit, showToast]);
+
+  const updateDeductionPayment = useCallback((
+    deductionId: string,
+    entryId: string,
+    updates: {
+      amount: number;
+      date: string;
+      remarks?: string;
+      reference?: string;
+      description?: string;
+    }
+  ) => {
+    setEmployeeDeductions(prev => {
+      const idx = prev.findIndex(d => d.id === deductionId || d.deductionId === deductionId);
+      if (idx < 0) return prev;
+
+      const deduction = prev[idx];
+      const targetEntryIndex = deduction.ledger.findIndex(e => e.id === entryId);
+      if (targetEntryIndex < 0) return prev;
+
+      const targetEntry = deduction.ledger[targetEntryIndex];
+      // Only manual payments can be edited (not GRANT, not payslip connected)
+      if (targetEntry.type === 'GRANT' || targetEntry.payslipId) {
+        showToast('Cannot edit this payment entry directly.', 'error');
+        return prev;
+      }
+
+      const newAmount = Math.max(0, updates.amount);
+      const updatedEntry: DeductionLedgerEntry = {
+        ...targetEntry,
+        credit: newAmount,
+        date: updates.date || targetEntry.date,
+        remarks: updates.remarks !== undefined ? updates.remarks.trim() : targetEntry.remarks,
+        description: updates.description !== undefined ? updates.description.trim() : targetEntry.description,
+        reference: updates.reference !== undefined ? updates.reference.trim() : targetEntry.reference,
+      };
+
+      const newLedger = [...deduction.ledger];
+      newLedger[targetEntryIndex] = updatedEntry;
+
+      const recalculated = recalculateDeductionLedger({
+        ...deduction,
+        ledger: newLedger,
+      });
+
+      syncDocToFirestore(COLLECTIONS.DEDUCTIONS, recalculated.id, recalculated).then(ok => {
+        if (!ok) showToast('Failed to save payment updates to database.', 'error');
+      });
+
+      logAudit({
+        action: 'DEDUCTION_UPDATE',
+        module: 'DEDUCTION',
+        targetId: deduction.deductionId,
+        targetName: `${deduction.deductionId} - ${deduction.employeeName}`,
+        description: `Updated manual payment of ₱${newAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} on ${deduction.deductionId}. New running balance: ₱${recalculated.runningBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}.`,
+      });
+
+      const next = [...prev];
+      next[idx] = recalculated;
+      return next;
+    });
+
+    showToast('Manual payment updated successfully!', 'success');
+  }, [logAudit, showToast]);
 
   const getEmployeeDeductions = useCallback((employeeId: string) => {
     return employeeDeductions.filter(d => d.employeeId === employeeId);
   }, [employeeDeductions]);
 
+  const updateThirteenthMonthItem = useCallback((
+    year: number,
+    employeeId: string,
+    updates: Partial<ThirteenthMonthItem>,
+    applyToLedger: boolean = true
+  ) => {
+    let affectedEmployeeName = '';
+    setThirteenthMonthRecords(prev => {
+      return prev.map(record => {
+        if (record.year !== year) return record;
+
+        const updatedItems = record.items.map(item => {
+          if (item.employeeId !== employeeId) return item;
+
+          affectedEmployeeName = item.employeeName;
+          const merged = { ...item, ...updates };
+          const baseBonus = Number(merged.thirteenthMonthPay) || 0;
+          const incentives = Number(merged.incentives) || 0;
+          const otherEarnings = Number(merged.otherEarnings) || 0;
+          const totalGross = Math.round((baseBonus + incentives + otherEarnings) * 100) / 100;
+          const deds = merged.deductions || [];
+          const totalDeds = Math.round(deds.reduce((sum, d) => sum + (Number(d.amount) || 0), 0) * 100) / 100;
+          const net = Math.max(0, Math.round((totalGross - totalDeds) * 100) / 100);
+
+          return {
+            ...merged,
+            thirteenthMonthPay: baseBonus,
+            incentives,
+            otherEarnings,
+            totalGrossPay: totalGross,
+            totalDeductions: totalDeds,
+            netPay: net,
+            status: 'adjusted' as const,
+          };
+        });
+
+        const totalThirteenthMonthPay = Math.round(updatedItems.reduce((s, i) => s + (i.totalGrossPay ?? i.thirteenthMonthPay), 0) * 100) / 100;
+        const totalDeductions = Math.round(updatedItems.reduce((s, i) => s + (i.totalDeductions || 0), 0) * 100) / 100;
+        const totalNetPay = Math.round(updatedItems.reduce((s, i) => s + (i.netPay !== undefined ? i.netPay : (i.totalGrossPay ?? i.thirteenthMonthPay)), 0) * 100) / 100;
+
+        return {
+          ...record,
+          totalThirteenthMonthPay,
+          totalDeductions,
+          totalNetPay,
+          items: updatedItems,
+        };
+      });
+    });
+
+    // Automatically record payment in employee deductions module
+    if (applyToLedger && updates.deductions) {
+      updates.deductions.forEach(dedItem => {
+        if (dedItem.deductionId && dedItem.amount > 0) {
+          recordDeductionPayment(dedItem.deductionId, {
+            amount: dedItem.amount,
+            date: new Date().toISOString().split('T')[0],
+            reference: `13TH-${year}`,
+            description: `13th Month Pay Deduction (${year})`,
+            remarks: dedItem.remarks || `Settled via 13th Month Pay Voucher for Year ${year}`,
+            type: 'PAYMENT',
+            thirteenthMonthYear: year,
+            isManual: true,
+          });
+        }
+      });
+    }
+
+    logAudit({
+      action: 'PAYSLIP_EDIT',
+      module: 'PAYROLL',
+      targetId: `13TH-${year}-${employeeId}`,
+      targetName: `13th Month Voucher (${year})`,
+      description: `Updated 13th Month Pay voucher gross/incentives/deductions for ${affectedEmployeeName || employeeId} (${year}).`,
+    });
+
+    showToast('13th Month Pay voucher updated successfully!', 'success');
+  }, [recordDeductionPayment, logAudit, showToast]);
+
   const updateCompanyProfile = useCallback((updates: Partial<CompanyProfile>) => {
     setCompanyProfile(prev => {
       const next = { ...prev, ...updates };
+
+      syncDocToFirestore(COLLECTIONS.COMPANY_PROFILE, 'default', next).then(ok => {
+        if (!ok) showToast('Failed to save company settings to database.', 'error');
+      });
+
       const changesDesc = [];
       if (updates.name !== undefined && updates.name !== prev.name) changesDesc.push(`Name: "${next.name}"`);
       if (updates.logoUrl !== undefined && updates.logoUrl !== prev.logoUrl) changesDesc.push(updates.logoUrl ? 'Company Logo updated' : 'Company Logo removed');
@@ -2074,19 +2658,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [logAudit, showToast]);
 
   const resetAllData = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEYS.USER);
-    localStorage.removeItem(STORAGE_KEYS.SYSTEM_USERS);
-    localStorage.removeItem(STORAGE_KEYS.IS_AUTHENTICATED);
-    localStorage.removeItem(STORAGE_KEYS.EMPLOYEES);
-    localStorage.removeItem(STORAGE_KEYS.DTR);
-    localStorage.removeItem(STORAGE_KEYS.DTR_DRAFTS);
-    localStorage.removeItem(STORAGE_KEYS.PAY_PERIODS);
-    localStorage.removeItem(STORAGE_KEYS.PAYSLIPS);
-    localStorage.removeItem(STORAGE_KEYS.AUDIT);
-    localStorage.removeItem(STORAGE_KEYS.COMPANY_PROFILE);
-    localStorage.removeItem(STORAGE_KEYS.THIRTEENTH_MONTH);
-    localStorage.removeItem(STORAGE_KEYS.SHIFTS);
-    localStorage.removeItem(STORAGE_KEYS.DEDUCTIONS);
+    localStorage.clear();
 
     setCurrentUserState(INITIAL_CURRENT_USER);
     setSystemUsers(INITIAL_SYSTEM_USERS);
@@ -2102,6 +2674,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCompanyProfile(INITIAL_COMPANY_PROFILE);
     setThirteenthMonthRecords(INITIAL_THIRTEENTH_MONTH_RECORDS);
     setEmployeeDeductions(INITIAL_DEDUCTIONS);
+
+    // Re-seed Cloud database
+    seedCollectionIfEmpty(COLLECTIONS.EMPLOYEES, INITIAL_EMPLOYEES);
+    seedCollectionIfEmpty(COLLECTIONS.SHIFTS, INITIAL_WORK_SHIFTS);
+    seedCollectionIfEmpty(COLLECTIONS.DEDUCTIONS, INITIAL_DEDUCTIONS);
+    seedCollectionIfEmpty(COLLECTIONS.PAY_PERIODS, INITIAL_PAY_PERIODS);
+    seedCollectionIfEmpty(COLLECTIONS.PAYSLIPS, INITIAL_PAYSLIPS);
+    syncDocToFirestore(COLLECTIONS.COMPANY_PROFILE, 'default', INITIAL_COMPANY_PROFILE);
 
     showToast('System data reset to initial Philippine demo database.', 'info');
   }, [showToast]);
@@ -2137,11 +2717,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         generateThirteenthMonthPay,
         approveThirteenthMonthPay,
         deleteThirteenthMonthRecord,
+        updateThirteenthMonthItem,
         employeeDeductions,
         addEmployeeDeduction,
         updateEmployeeDeduction,
         deleteEmployeeDeduction,
         recordDeductionPayment,
+        updateDeductionPayment,
+        adjustDeductionPrincipal,
         deleteDeductionLedgerEntry,
         getEmployeeDeductions,
         isSuperAdmin,
@@ -2174,6 +2757,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         createPayPeriod,
         logAudit,
         resetAllData,
+        isCloudConnected,
+        isCloudSyncing,
         toast,
         toastMessage,
         showToast,

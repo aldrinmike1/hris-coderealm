@@ -405,12 +405,6 @@ export const PayslipModal: React.FC<PayslipModalProps> = ({
                     </div>
                   )}
 
-                  {payslip.mlsDeduction > 0 && (
-                    <div className="flex items-center justify-between py-1 text-slate-700">
-                      <span>MLS Deduction</span>
-                      <span className="font-semibold text-rose-700">-{formatCurrency(payslip.mlsDeduction)}</span>
-                    </div>
-                  )}
 
                   {(payslip.cashAdvanceDeduction || 0) > 0 && (
                     <div className="flex items-center justify-between py-1 text-amber-900 bg-amber-50/80 px-1.5 rounded">

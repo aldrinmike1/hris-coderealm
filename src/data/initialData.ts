@@ -1,4 +1,4 @@
-import { Employee, DTRRecord, PayPeriod, PeriodHoliday, Payslip, AuditLogEntry, CurrentUser, CompanyProfile, ThirteenthMonthRecord, SystemUser, WorkShift, EmployeeDeduction } from '../types';
+import { Employee, DTRRecord, PayPeriod, PeriodHoliday, Payslip, PayslipItem, AuditLogEntry, CurrentUser, CompanyProfile, ThirteenthMonthRecord, SystemUser, WorkShift, EmployeeDeduction } from '../types';
 import { generateEmployeePayslip } from '../utils/calculations';
 import { SAMPLE_BIOMETRIC_DATA_CSV, generateDTRRecordsFromBiometricCSV } from '../utils/biometricsParser';
 
@@ -442,6 +442,26 @@ export const INITIAL_DTR_RECORDS: DTRRecord[] = generateDTRRecordsFromBiometricC
   INITIAL_EMPLOYEES
 );
 
+const getInitialCustomDeductions = (empId: string): PayslipItem[] => {
+  if (empId === 'emp-006') {
+    return [
+      { name: 'Loan: Company Emergency Cash Loan (DED-2026-001)', amount: 1000 },
+      { name: 'Salary Deduction: Company Uniform & Safety Gear Package (DED-2026-002)', amount: 300 },
+    ];
+  }
+  if (empId === 'emp-007') {
+    return [
+      { name: 'Loan: SSS Salary Loan Monthly Amortization (DED-2026-003)', amount: 750 },
+    ];
+  }
+  if (empId === 'emp-008') {
+    return [
+      { name: 'Salary Deduction: Motorcycle Helmet & Tool Kit Cash Advance (DED-2026-004)', amount: 500 },
+    ];
+  }
+  return [];
+};
+
 const w34Payslips: Payslip[] = INITIAL_EMPLOYEES
   .filter((e) => e.status === 'active')
   .map((emp) => {
@@ -456,7 +476,7 @@ const w34Payslips: Payslip[] = INITIAL_EMPLOYEES
         type: 'Special Non-Working Holiday',
       },
     ];
-    const slip = generateEmployeePayslip(emp, 'PP-2026-W34', empDtr, [], [], w34Holidays);
+    const slip = generateEmployeePayslip(emp, 'PP-2026-W34', empDtr, [], getInitialCustomDeductions(emp.id), w34Holidays);
     slip.status = 'Approved';
     return slip;
   });
@@ -467,7 +487,7 @@ const w35Payslips: Payslip[] = INITIAL_EMPLOYEES
     const empDtr = INITIAL_DTR_RECORDS.filter(
       (d) => d.employeeId === emp.id && d.date >= '2026-08-22' && d.date <= '2026-08-28'
     );
-    const slip = generateEmployeePayslip(emp, 'PP-2026-W35', empDtr, [], [], []);
+    const slip = generateEmployeePayslip(emp, 'PP-2026-W35', empDtr, [], getInitialCustomDeductions(emp.id), []);
     slip.status = 'Approved';
     return slip;
   });
@@ -478,7 +498,7 @@ const w36Payslips: Payslip[] = INITIAL_EMPLOYEES
     const empDtr = INITIAL_DTR_RECORDS.filter(
       (d) => d.employeeId === emp.id && d.date >= '2026-08-29' && d.date <= '2026-09-04'
     );
-    const slip = generateEmployeePayslip(emp, 'PP-2026-W36', empDtr, [], [], []);
+    const slip = generateEmployeePayslip(emp, 'PP-2026-W36', empDtr, [], getInitialCustomDeductions(emp.id), []);
     slip.status = 'Approved';
     return slip;
   });
@@ -1058,14 +1078,14 @@ export const INITIAL_DEDUCTIONS: EmployeeDeduction[] = [
     employeeNumber: 'EMP-008',
     department: 'Engineering & Operations',
     position: 'Technician Specialist',
-    description: 'Motorcycle Helmet & Tool Kit Cash Advance',
+    description: 'MLS Equipment Package Amortization',
     amount: 3500,
     interest: 0,
     interestType: 'fixed',
     interestRate: 0,
     totalAmount: 3500,
     date: '2026-08-05',
-    type: 'Others',
+    type: 'MLS',
     cutoffDeductionAmount: 500,
     totalPaid: 1500,
     runningBalance: 2000,

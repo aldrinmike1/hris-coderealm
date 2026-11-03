@@ -57,10 +57,6 @@ export const CompactPayslipView: React.FC<CompactPayslipViewProps> = ({
     payslip.cashAdvanceDeduction && payslip.cashAdvanceDeduction > 0
       ? payslip.cashAdvanceDeduction.toFixed(2)
       : '';
-  let mls =
-    payslip.mlsDeduction && payslip.mlsDeduction > 0
-      ? payslip.mlsDeduction.toFixed(2)
-      : '';
   let otherDedsTotal = 0;
 
   if (payslip.otherDeductions && payslip.otherDeductions.length > 0) {
@@ -77,8 +73,6 @@ export const CompactPayslipView: React.FC<CompactPayslipViewProps> = ({
         hdmfLoan = (current + d.amount).toFixed(2);
       } else if (nameLower.includes('cash advance') || nameLower.includes('vale')) {
         if (!cashAdvance) cashAdvance = d.amount.toFixed(2);
-      } else if (nameLower.includes('mls')) {
-        if (!mls) mls = d.amount.toFixed(2);
       } else {
         otherDedsTotal += d.amount;
       }
@@ -401,16 +395,6 @@ export const CompactPayslipView: React.FC<CompactPayslipViewProps> = ({
             </td>
           </tr>
 
-          {/* MLS (Empty amount underline) */}
-          <tr>
-            <td className="px-1 py-0.5 text-right text-black whitespace-nowrap">
-              MLS
-            </td>
-            <td className="px-1 py-0.5"></td>
-            <td className="px-1.5 py-0.5 text-right font-mono text-black border-b border-black">
-              {mls}
-            </td>
-          </tr>
 
           {/* Total Deductions (Thick border top & bottom, no vertical divider) */}
           <tr className="border-t-[1.5px] border-b-[1.5px] border-black">

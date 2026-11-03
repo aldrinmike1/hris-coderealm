@@ -5,7 +5,12 @@ import {
   DeductionType,
   DeductionStatus,
   EmployeeWithDeductionSummary,
+  Payslip,
+  PayslipItem,
+  ThirteenthMonthItem,
+  ThirteenthMonthRecord,
 } from '../../types';
+import { generateEmployeePayslip } from '../../utils/calculations';
 import {
   Plus,
   Search,
@@ -26,34 +31,66 @@ import {
   Layers,
   ArrowUpDown,
   FileText,
+  History,
+  Calendar,
+  CheckCheck,
+  Gift,
+  TrendingUp,
 } from 'lucide-react';
 import { AddDeductionModal } from './AddDeductionModal';
 import { RecordPaymentModal } from './RecordPaymentModal';
+import { AdjustPrincipalModal } from './AdjustPrincipalModal';
 import { PaymentRecordsModal } from './PaymentRecordsModal';
+import { PayslipModal } from '../payroll/PayslipModal';
+import { ThirteenthMonthVoucherModal } from '../payroll/ThirteenthMonthVoucherModal';
+import { PaymentSummaryTab } from './PaymentSummaryTab';
 
 export const DeductionsDashboard: React.FC = () => {
   const {
     employees,
     employeeDeductions,
     deleteEmployeeDeduction,
+    payslips,
+    payPeriods,
+    thirteenthMonthRecords,
+    dtrRecords,
+    companyProfile,
     showToast,
   } = useApp();
 
-  // Search and filter states
+  // Navigation tabs on the Deduction Dashboard
+  const [activeDashboardTab, setActiveDashboardTab] = useState<'employees' | 'summary' | 'history'>('employees');
+
+  // Search and filter states for "Employees with Deductions" tab
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('ALL');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('ALL');
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string | null>(null);
+
+  // Search and filter states for "Deduction History" tab
+  const [historySearchQuery, setHistorySearchQuery] = useState('');
+  const [historyTypeFilter, setHistoryTypeFilter] = useState<string>('ALL');
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<string>('ALL');
+  const [historyViewMode, setHistoryViewMode] = useState<'transactions' | 'accounts'>('transactions');
 
   // Modal triggers
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingDeduction, setEditingDeduction] = useState<EmployeeDeduction | null>(null);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [preselectedDeductionForPayment, setPreselectedDeductionForPayment] = useState<string | undefined>(undefined);
+  const [isAdjustPrincipalOpen, setIsAdjustPrincipalOpen] = useState(false);
+  const [preselectedDeductionForAdjustment, setPreselectedDeductionForAdjustment] = useState<string | undefined>(undefined);
 
   // Payment Records Modal triggers
   const [isPaymentRecordsModalOpen, setIsPaymentRecordsModalOpen] = useState(false);
   const [selectedDeductionForRecords, setSelectedDeductionForRecords] = useState<EmployeeDeduction | null>(null);
+
+  // Payslip Modal triggers (from history view or payslip button)
+  const [viewingPayslip, setViewingPayslip] = useState<Payslip | null>(null);
+  const [isPayslipModalOpen, setIsPayslipModalOpen] = useState(false);
+
+  // 13th Month Voucher Modal trigger
+  const [viewingThirteenthMonth, setViewingThirteenthMonth] = useState<{ item: ThirteenthMonthItem; record: ThirteenthMonthRecord | null; year: number } | null>(null);
 
   // 1. Group deductions by employee for the "List of employees who have a deduction"
   const employeesWithDeductions: EmployeeWithDeductionSummary[] = useMemo(() => {
@@ -150,6 +187,168 @@ export const DeductionsDashboard: React.FC = () => {
     });
   }, [employeesWithDeductions, searchQuery, selectedTypeFilter, selectedStatusFilter]);
 
+  // -------------------------------------------------------------
+  // 2. DEDUCTION HISTORY: Processed transactions & deductions log
+  // -------------------------------------------------------------
+  const allProcessedHistoryEntries = useMemo(() => {
+    const list: Array<{
+      id: string;
+      date: string;
+      deductionId: string;
+      deductionCode: string;
+      deductionTitle: string;
+      type: DeductionType;
+      employeeId: string;
+      employeeName: string;
+      employeeNumber: string;
+      department: string;
+      position: string;
+      avatarUrl?: string;
+      amount: number;
+      runningBalance: number;
+      reference: string;
+      remarks?: string;
+      status: DeductionStatus;
+      payslipId?: string;
+      payPeriodId?: string;
+      thirteenthMonthYear?: number;
+      isManual?: boolean;
+      transactionType: 'CUTOFF_DEDUCTION' | 'PAYMENT';
+      rawDeduction: EmployeeDeduction;
+    }> = [];
+
+    employeeDeductions.forEach(ded => {
+      const emp = employees.find(e => e.id === ded.employeeId);
+      const empName = emp ? `${emp.firstName} ${emp.lastName}` : ded.employeeName;
+      const empNum = emp?.employeeNumber || ded.employeeNumber;
+      const dept = emp?.department || ded.department || 'General';
+      const pos = emp?.position || ded.position || 'Staff';
+      const avatar = emp?.avatarUrl;
+
+      // Filter for all processed deduction events (CUTOFF_DEDUCTION or PAYMENT)
+      const processedEntries = ded.ledger.filter(entry => entry.type !== 'GRANT');
+
+      processedEntries.forEach(entry => {
+        // Resolve connected payslipId if available
+        let connectedPayslipId = entry.payslipId;
+        if (!connectedPayslipId && entry.reference) {
+          const matchedPeriod = payPeriods.find(p => p.id === entry.reference);
+          if (matchedPeriod) {
+            const matchedSlip = payslips.find(
+              ps => ps.payPeriodId === matchedPeriod.id && ps.employeeId === ded.employeeId
+            );
+            if (matchedSlip) {
+              connectedPayslipId = matchedSlip.id;
+            }
+          }
+        }
+        if (!connectedPayslipId && entry.reference?.startsWith('PS-')) {
+          connectedPayslipId = entry.reference;
+        }
+
+        let thYear = entry.thirteenthMonthYear;
+        if (!thYear && entry.reference?.startsWith('13TH-')) {
+          const parsed = parseInt(entry.reference.replace('13TH-', ''), 10);
+          if (!isNaN(parsed)) thYear = parsed;
+        }
+
+        list.push({
+          id: entry.id,
+          date: entry.date,
+          deductionId: ded.id,
+          deductionCode: ded.deductionId,
+          deductionTitle: ded.description,
+          type: ded.type,
+          employeeId: ded.employeeId,
+          employeeName: empName,
+          employeeNumber: empNum,
+          department: dept,
+          position: pos,
+          avatarUrl: avatar,
+          amount: entry.credit,
+          runningBalance: entry.runningBalance,
+          reference: entry.reference,
+          remarks: entry.description || entry.remarks,
+          status: entry.runningBalance <= 0 ? 'Completed' : ded.status,
+          payslipId: connectedPayslipId,
+          payPeriodId: entry.payPeriodId,
+          thirteenthMonthYear: thYear,
+          isManual: entry.isManual,
+          transactionType: entry.type === 'CUTOFF_DEDUCTION' ? 'CUTOFF_DEDUCTION' : 'PAYMENT',
+          rawDeduction: ded,
+        });
+      });
+    });
+
+    // Sort chronologically descending (most recent first)
+    return list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [employeeDeductions, employees, payPeriods, payslips]);
+
+  // Count of unique Date + Deduction Type groups for the Payment Summary tab badge
+  const paymentSummaryCount = useMemo(() => {
+    const keys = new Set<string>();
+    employeeDeductions.forEach(ded => {
+      (ded.ledger || []).forEach(entry => {
+        if (
+          entry.type !== 'GRANT' &&
+          (entry.credit > 0 || entry.type === 'PAYMENT' || entry.type === 'CUTOFF_DEDUCTION')
+        ) {
+          const date = entry.date || 'Unknown';
+          const type = ded.type || 'Others';
+          keys.add(`${date}___${type}`);
+        }
+      });
+    });
+    return keys.size;
+  }, [employeeDeductions]);
+
+  // Filtered Deduction History
+  const filteredHistoryEntries = useMemo(() => {
+    return allProcessedHistoryEntries.filter(item => {
+      // Search query
+      const q = historySearchQuery.toLowerCase().trim();
+      const matchSearch =
+        !q ||
+        item.employeeName.toLowerCase().includes(q) ||
+        item.employeeNumber.toLowerCase().includes(q) ||
+        item.deductionCode.toLowerCase().includes(q) ||
+        item.deductionTitle.toLowerCase().includes(q) ||
+        item.reference.toLowerCase().includes(q) ||
+        item.department.toLowerCase().includes(q);
+
+      if (!matchSearch) return false;
+
+      // Type filter
+      if (historyTypeFilter !== 'ALL' && item.type !== historyTypeFilter) {
+        return false;
+      }
+
+      // Status filter
+      if (historyStatusFilter !== 'ALL') {
+        if (historyStatusFilter === 'Completed' && item.status !== 'Completed') return false;
+        if (historyStatusFilter === 'Active' && item.status !== 'Active') return false;
+        if (historyStatusFilter === 'Paused' && item.status !== 'Paused') return false;
+      }
+
+      return true;
+    });
+  }, [allProcessedHistoryEntries, historySearchQuery, historyTypeFilter, historyStatusFilter]);
+
+  // History stats
+  const historyStats = useMemo(() => {
+    const totalTransactions = allProcessedHistoryEntries.length;
+    const totalAmountProcessed = allProcessedHistoryEntries.reduce((sum, item) => sum + item.amount, 0);
+    const completedDeductionsCount = employeeDeductions.filter(d => d.status === 'Completed' || d.runningBalance <= 0).length;
+    const activeDeductionsCount = employeeDeductions.filter(d => d.status === 'Active' && d.runningBalance > 0).length;
+
+    return {
+      totalTransactions,
+      totalAmountProcessed,
+      completedDeductionsCount,
+      activeDeductionsCount,
+    };
+  }, [allProcessedHistoryEntries, employeeDeductions]);
+
   // Currently viewed employee in detail view
   const viewingEmployeeData = useMemo(() => {
     if (!selectedEmployeeId) return null;
@@ -186,9 +385,149 @@ export const DeductionsDashboard: React.FC = () => {
     setIsPaymentModalOpen(true);
   };
 
+  const handleOpenAdjustPrincipal = (dedId?: string) => {
+    setPreselectedDeductionForAdjustment(dedId);
+    setIsAdjustPrincipalOpen(true);
+  };
+
   const handleOpenPaymentRecords = (ded: EmployeeDeduction | null) => {
     setSelectedDeductionForRecords(ded);
     setIsPaymentRecordsModalOpen(true);
+  };
+
+  // Open connected payslip
+  const handleOpenPayslip = (payslipId?: string, historyItem?: any) => {
+    let targetSlip: Payslip | undefined;
+
+    if (payslipId) {
+      targetSlip = payslips.find(ps => ps.id === payslipId);
+    }
+
+    if (!targetSlip && historyItem) {
+      if (historyItem.payPeriodId) {
+        targetSlip = payslips.find(
+          ps => ps.employeeId === historyItem.employeeId && ps.payPeriodId === historyItem.payPeriodId
+        );
+      }
+      if (!targetSlip && historyItem.reference) {
+        targetSlip = payslips.find(
+          ps => ps.employeeId === historyItem.employeeId && ps.payPeriodId === historyItem.reference
+        );
+      }
+    }
+
+    const targetAmount = Math.abs(historyItem?.amount || 0);
+
+    if (targetSlip && historyItem) {
+      const otherDeds = [...(targetSlip.otherDeductions || [])];
+      const matchIdx = otherDeds.findIndex(
+        od => od.name.includes(historyItem.deductionCode) ||
+              (historyItem.deductionTitle && od.name.toLowerCase().includes(historyItem.deductionTitle.toLowerCase()))
+      );
+
+      let needsAdjustment = false;
+      if (matchIdx >= 0) {
+        if (targetAmount > 0 && otherDeds[matchIdx].amount !== targetAmount) {
+          otherDeds[matchIdx] = { ...otherDeds[matchIdx], amount: targetAmount };
+          needsAdjustment = true;
+        }
+      } else if (targetAmount > 0) {
+        otherDeds.push({
+          name: `${historyItem.type === 'Loan' ? 'Loan' : 'Salary Deduction'}: ${historyItem.deductionTitle} (${historyItem.deductionCode})`,
+          amount: targetAmount,
+        });
+        needsAdjustment = true;
+      }
+
+      if (needsAdjustment) {
+        const totOther = otherDeds.reduce((s, it) => s + it.amount, 0);
+        const withholdingTaxAmount = companyProfile?.enableWithholdingTax ? (targetSlip.withholdingTax || 0) : 0;
+        const totDeds = Math.round(
+          ((targetSlip.lateUndertimeDeduction || 0) +
+            (targetSlip.sssDeduction || 0) +
+            (targetSlip.philhealthDeduction || 0) +
+            (targetSlip.pagibigDeduction || 0) +
+            withholdingTaxAmount +
+            (targetSlip.cashAdvanceDeduction || 0) +
+            totOther) * 100
+        ) / 100;
+        const net = Math.max(0, Math.round((targetSlip.grossPay - totDeds) * 100) / 100);
+
+        targetSlip = {
+          ...targetSlip,
+          otherDeductions: otherDeds,
+          totalOtherDeductions: totOther,
+          totalDeductions: totDeds,
+          netPay: net,
+        };
+      }
+
+      setViewingPayslip(targetSlip);
+      setIsPayslipModalOpen(true);
+      return;
+    }
+
+    if (historyItem) {
+      const emp = employees.find(e => e.id === historyItem.employeeId);
+      const matchedPeriod = payPeriods.find(p => p.id === historyItem.payPeriodId || p.id === historyItem.reference);
+      if (emp && matchedPeriod) {
+        const empDtr = dtrRecords.filter(
+          d => d.employeeId === emp.id && d.date >= matchedPeriod.startDate && d.date <= matchedPeriod.endDate
+        );
+        const customDeds: PayslipItem[] = targetAmount > 0 ? [
+          {
+            name: `${historyItem.type === 'Loan' ? 'Loan' : 'Salary Deduction'}: ${historyItem.deductionTitle} (${historyItem.deductionCode})`,
+            amount: targetAmount,
+          },
+        ] : [];
+        const calculatedSlip = generateEmployeePayslip(
+          emp,
+          matchedPeriod.id,
+          empDtr,
+          [],
+          customDeds,
+          matchedPeriod.holidays || [],
+          {
+            enableLateDeduction: companyProfile?.enableLateDeduction !== false,
+            enableNightShiftPay: companyProfile?.enableNightShiftPay,
+            enableWithholdingTax: companyProfile?.enableWithholdingTax,
+          }
+        );
+        calculatedSlip.status = 'Approved';
+        setViewingPayslip(calculatedSlip);
+        setIsPayslipModalOpen(true);
+      }
+    }
+  };
+
+  // Open connected 13th month voucher
+  const handleOpenThirteenthMonth = (year: number, employeeId: string) => {
+    const rec = thirteenthMonthRecords.find(r => r.year === year);
+    const itm = rec?.items.find(i => i.employeeId === employeeId);
+    if (itm) {
+      setViewingThirteenthMonth({ item: itm, record: rec || null, year });
+    } else {
+      const emp = employees.find(e => e.id === employeeId);
+      const fallbackItem: ThirteenthMonthItem = {
+        employeeId: employeeId,
+        employeeNumber: emp?.employeeNumber || '',
+        employeeName: emp ? `${emp.firstName} ${emp.lastName}` : 'Employee',
+        department: emp?.department || 'General',
+        position: emp?.position || 'Staff',
+        dailyRate: emp?.dailyRate || 610,
+        monthsWorkedCount: 12,
+        totalBasicSalaryEarned: (emp?.dailyRate || 610) * 313,
+        thirteenthMonthPay: Math.round(((emp?.dailyRate || 610) * 313 / 12) * 100) / 100,
+        totalGrossPay: Math.round(((emp?.dailyRate || 610) * 313 / 12) * 100) / 100,
+        taxableAmount: 0,
+        status: 'Approved',
+      };
+      setViewingThirteenthMonth({
+        item: fallbackItem,
+        record: rec || null,
+        year,
+      });
+    }
   };
 
   return (
@@ -272,269 +611,85 @@ export const DeductionsDashboard: React.FC = () => {
       </div>
 
       {/* ======================================================== */}
-      {/* 2. MAIN CONTENT AREA                                    */}
+      {/* 2. DASHBOARD VIEW TABS SWITCHER                          */}
       {/* ======================================================== */}
-      {!selectedEmployeeId ? (
-        /* ====================================================== */
-        /* A. HOME OF DEDUCTIONS: LIST OF EMPLOYEES WITH DEDUCTION */
-        /* ====================================================== */
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-          {/* Header & Controls */}
-          <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3.5">
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold text-slate-900">
-                  Employees with Deductions
-                </h2>
-                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800 font-mono">
-                  {filteredEmployeesWithDeductions.length}
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Overview of employees holding active loans and salary deductions. Click any employee to view their individual accounts and payment records.
-              </p>
-            </div>
+      {!selectedEmployeeId && (
+        <div className="flex items-center justify-between border-b border-slate-200 px-1 pt-1 gap-4 flex-wrap">
+          <div className="flex items-center gap-1 sm:gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveDashboardTab('employees')}
+              className={`pb-3 px-3 sm:px-4 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+                activeDashboardTab === 'employees'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <User className="w-4 h-4" />
+              <span>Employees with Deductions</span>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                activeDashboardTab === 'employees' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+              }`}>
+                {employeesWithDeductions.length}
+              </span>
+            </button>
 
-            {/* Quick Actions */}
-            <div className="flex items-center gap-2.5 self-start md:self-auto">
-              <button
-                type="button"
-                onClick={() => handleOpenAdd()}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs shadow-blue-600/20 transition-all cursor-pointer"
-                id="deductions-new-btn"
-              >
-                <Plus className="w-4 h-4" />
-                <span>New Deduction</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setActiveDashboardTab('summary')}
+              className={`pb-3 px-3 sm:px-4 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+                activeDashboardTab === 'summary'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Receipt className="w-4 h-4" />
+              <span>Payment Summary</span>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                activeDashboardTab === 'summary' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+              }`}>
+                {paymentSummaryCount}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveDashboardTab('history')}
+              className={`pb-3 px-3 sm:px-4 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+                activeDashboardTab === 'history'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <History className="w-4 h-4" />
+              <span>Deduction History</span>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                activeDashboardTab === 'history' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+              }`}>
+                {allProcessedHistoryEntries.length}
+              </span>
+            </button>
           </div>
 
-          {/* Search & Filters Strip */}
-          <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            {/* Search Input */}
-            <div className="relative flex-1 max-w-sm">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-              <input
-                type="text"
-                placeholder="Search employee name, number, or department..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-medium placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-
-            {/* Filters */}
-            <div className="flex items-center gap-2 flex-wrap">
-              {/* Type Filter */}
-              <div className="flex items-center gap-1 text-xs">
-                <span className="text-slate-500 text-[11px] font-semibold">Type:</span>
-                <select
-                  value={selectedTypeFilter}
-                  onChange={e => setSelectedTypeFilter(e.target.value)}
-                  className="px-2.5 py-1 border border-slate-300 rounded-lg text-xs font-semibold bg-white focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
-                >
-                  <option value="ALL">All Types</option>
-                  <option value="Loan">Loans Only</option>
-                  <option value="Salary Deduction">Salary Deductions Only</option>
-                  <option value="Others">Others Only</option>
-                </select>
-              </div>
-
-              {/* Status Filter */}
-              <div className="flex items-center gap-1 text-xs">
-                <span className="text-slate-500 text-[11px] font-semibold">Status:</span>
-                <select
-                  value={selectedStatusFilter}
-                  onChange={e => setSelectedStatusFilter(e.target.value)}
-                  className="px-2.5 py-1 border border-slate-300 rounded-lg text-xs font-semibold bg-white focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
-                >
-                  <option value="ALL">All Statuses</option>
-                  <option value="ACTIVE">With Remaining Balance</option>
-                  <option value="COMPLETED">Fully Settled</option>
-                </select>
-              </div>
-            </div>
+          <div className="pb-2">
+            <button
+              type="button"
+              onClick={() => handleOpenAdd()}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs shadow-blue-600/20 transition-all cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>New Deduction</span>
+            </button>
           </div>
-
-          {/* Employees List Table */}
-          {filteredEmployeesWithDeductions.length === 0 ? (
-            <div className="p-12 text-center space-y-3">
-              <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mx-auto">
-                <Receipt className="w-6 h-6" />
-              </div>
-              <h3 className="text-sm font-bold text-slate-800">No Employee Deductions Found</h3>
-              <p className="text-xs text-slate-500 max-w-md mx-auto">
-                {searchQuery || selectedTypeFilter !== 'ALL' || selectedStatusFilter !== 'ALL'
-                  ? 'No employees match the selected search or filter criteria.'
-                  : 'No employees currently have registered loans or salary deductions. Click "+ New Deduction" to grant a loan or create a salary deduction.'}
-              </p>
-              <button
-                onClick={() => handleOpenAdd()}
-                className="mt-2 inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Create Deduction</span>
-              </button>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead className="bg-slate-100/80 text-[11px] uppercase font-bold text-slate-600 border-b border-slate-200">
-                  <tr>
-                    <th className="py-3 px-4">Employee</th>
-                    <th className="py-3 px-3">Department & Position</th>
-                    <th className="py-3 px-3">Deduction Accounts</th>
-                    <th className="py-3 px-3 text-right">Total Obligation</th>
-                    <th className="py-3 px-3 text-right">Total Paid</th>
-                    <th className="py-3 px-3 text-right bg-blue-50/50">Running Balance</th>
-                    <th className="py-3 px-3 text-right">Cutoff Amort.</th>
-                    <th className="py-3 px-3 text-center">Status</th>
-                    <th className="py-3 px-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200/80">
-                  {filteredEmployeesWithDeductions.map((row) => (
-                    <tr
-                      key={row.employeeId}
-                      onClick={() => setSelectedEmployeeId(row.employeeId)}
-                      className="hover:bg-blue-50/40 transition-colors cursor-pointer group"
-                    >
-                      {/* Employee Column */}
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        <div className="flex items-center gap-2.5">
-                          {row.avatarUrl ? (
-                            <img
-                              src={row.avatarUrl}
-                              alt={row.employeeName}
-                              className="w-8 h-8 rounded-full object-cover border border-slate-200 shrink-0"
-                            />
-                          ) : (
-                            <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 font-bold flex items-center justify-center text-xs shrink-0">
-                              {row.employeeName.charAt(0)}
-                            </div>
-                          )}
-                          <div>
-                            <div className="font-bold text-slate-900 group-hover:text-blue-600 transition-colors">
-                              {row.employeeName}
-                            </div>
-                            <div className="font-mono text-[11px] text-slate-500">
-                              {row.employeeNumber}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-
-                      {/* Department & Position */}
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        <div className="font-medium text-slate-900">{row.department}</div>
-                        <div className="text-[11px] text-slate-500">{row.position}</div>
-                      </td>
-
-                      {/* Deduction Accounts Pills */}
-                      <td className="py-3 px-3">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-mono font-bold text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">
-                            {row.totalDeductionsCount} {row.totalDeductionsCount === 1 ? 'account' : 'accounts'}
-                          </span>
-                          {row.deductions.map((d) => (
-                            <span
-                              key={d.id}
-                              className={`text-[10px] px-1.5 py-0.2 rounded font-semibold whitespace-nowrap ${
-                                d.type === 'Loan'
-                                  ? 'bg-purple-100 text-purple-800'
-                                  : d.type === 'Salary Deduction'
-                                  ? 'bg-amber-100 text-amber-800'
-                                  : 'bg-slate-100 text-slate-700'
-                              }`}
-                              title={`${d.deductionId}: ${d.description}`}
-                            >
-                              {d.type}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-
-                      {/* Total Obligation */}
-                      <td className="py-3 px-3 text-right font-mono font-semibold text-slate-900 whitespace-nowrap">
-                        ₱{row.totalOriginalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                      </td>
-
-                      {/* Total Paid */}
-                      <td className="py-3 px-3 text-right font-mono text-emerald-700 font-semibold whitespace-nowrap">
-                        ₱{row.totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                      </td>
-
-                      {/* Running Balance */}
-                      <td className="py-3 px-3 text-right font-mono font-black text-slate-900 bg-blue-50/50 whitespace-nowrap">
-                        <span className={row.totalRunningBalance > 0 ? 'text-blue-950 font-black' : 'text-slate-400'}>
-                          ₱{row.totalRunningBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </span>
-                      </td>
-
-                      {/* Cutoff Amortization */}
-                      <td className="py-3 px-3 text-right font-mono font-bold text-blue-700 whitespace-nowrap">
-                        {row.totalCutoffDeductionAmount > 0 ? (
-                          <span>₱{row.totalCutoffDeductionAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} / wk</span>
-                        ) : (
-                          <span className="text-slate-300">—</span>
-                        )}
-                      </td>
-
-                      {/* Status */}
-                      <td className="py-3 px-3 text-center whitespace-nowrap">
-                        {row.totalRunningBalance > 0 ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                            Active ({row.activeDeductionsCount})
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                            ✓ Settled
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Actions */}
-                      <td className="py-3 px-4 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedEmployeeId(row.employeeId);
-                              setSelectedDeductionForRecords(row.deductions[0] || null);
-                              setIsPaymentRecordsModalOpen(true);
-                            }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200/80 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
-                            title="Open Payment Records Modal"
-                          >
-                            <Receipt className="w-3.5 h-3.5 text-emerald-600" />
-                            <span>Payment Records</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedEmployeeId(row.employeeId);
-                            }}
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 hover:bg-blue-600 hover:text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
-                            title="View Deductions"
-                          >
-                            <span>View</span>
-                            <ChevronRight className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
-      ) : (
+      )}
+
+      {/* ======================================================== */}
+      {/* 3. MAIN CONTENT: BASED ON ACTIVE VIEW / TAB              */}
+      {/* ======================================================== */}
+      {selectedEmployeeId ? (
         /* ====================================================== */
-        /* B. INDIVIDUAL EMPLOYEE DEDUCTIONS VIEW                 */
+        /* A. INDIVIDUAL EMPLOYEE DEDUCTIONS VIEW                 */
         /* ====================================================== */
         viewingEmployeeData && (
           <div className="space-y-4">
@@ -606,6 +761,17 @@ export const DeductionsDashboard: React.FC = () => {
 
                 <button
                   type="button"
+                  onClick={() => handleOpenAdjustPrincipal()}
+                  disabled={!viewingEmployeeData?.deductions?.length}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-xs shadow-indigo-600/20 transition-all cursor-pointer"
+                  title="Adjust principal or increment balance (e.g. for skipped cutoff deduction)"
+                >
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  <span>Adjust Principal</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => handleOpenAdd(selectedEmployeeId)}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer"
                 >
@@ -658,7 +824,7 @@ export const DeductionsDashboard: React.FC = () => {
               </div>
             </div>
 
-            {/* Deductions Accounts Table (Primary list view, ledger page removed) */}
+            {/* Deductions Accounts Table */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
               <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
@@ -676,9 +842,7 @@ export const DeductionsDashboard: React.FC = () => {
                 <table className="w-full text-left text-xs border-collapse">
                   <thead className="bg-slate-100/80 text-[10px] uppercase font-bold text-slate-600 border-b border-slate-200">
                     <tr>
-                      <th className="py-2.5 px-4">Deduction ID</th>
-                      <th className="py-2.5 px-3">Type</th>
-                      <th className="py-2.5 px-3">Description</th>
+                      <th className="py-2.5 px-4">Deduction Details</th>
                       <th className="py-2.5 px-3">Date Granted</th>
                       <th className="py-2.5 px-3 text-right">Principal</th>
                       <th className="py-2.5 px-3 text-right">Interest</th>
@@ -693,22 +857,26 @@ export const DeductionsDashboard: React.FC = () => {
                   <tbody className="divide-y divide-slate-200/80">
                     {viewingEmployeeData.deductions.map((d) => (
                       <tr key={d.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="py-2.5 px-4 font-mono font-bold text-slate-900 whitespace-nowrap">
-                          {d.deductionId}
-                        </td>
-                        <td className="py-2.5 px-3 whitespace-nowrap">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            d.type === 'Loan'
-                              ? 'bg-purple-100 text-purple-800'
-                              : d.type === 'Salary Deduction'
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-slate-100 text-slate-700'
-                          }`}>
-                            {d.type}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 font-semibold text-slate-900 whitespace-nowrap">
-                          {d.description}
+                        <td className="py-2.5 px-4 whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-slate-900">
+                              {d.deductionId}
+                            </span>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              d.type === 'Loan'
+                                ? 'bg-purple-100 text-purple-800'
+                                : d.type === 'Salary Deduction'
+                                ? 'bg-amber-100 text-amber-800'
+                                : d.type === 'MLS'
+                                ? 'bg-indigo-100 text-indigo-800'
+                                : 'bg-slate-100 text-slate-700'
+                            }`}>
+                              {d.type}
+                            </span>
+                          </div>
+                          <div className="font-semibold text-slate-700 text-xs mt-0.5">
+                            {d.description}
+                          </div>
                         </td>
                         <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">{d.date}</td>
                         <td className="py-2.5 px-3 text-right font-mono text-slate-700 whitespace-nowrap">
@@ -744,7 +912,6 @@ export const DeductionsDashboard: React.FC = () => {
                         </td>
                         <td className="py-2.5 px-4 text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1.5">
-                            {/* Payment Records Button replacing View Ledger */}
                             <button
                               type="button"
                               onClick={() => handleOpenPaymentRecords(d)}
@@ -765,6 +932,15 @@ export const DeductionsDashboard: React.FC = () => {
                                 <CreditCard className="w-3.5 h-3.5" />
                               </button>
                             )}
+
+                            <button
+                              type="button"
+                              onClick={() => handleOpenAdjustPrincipal(d.id)}
+                              className="p-1.5 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
+                              title="Adjust Principal / Increment Balance (e.g. Skipped Cutoff)"
+                            >
+                              <TrendingUp className="w-3.5 h-3.5" />
+                            </button>
 
                             <button
                               type="button"
@@ -793,10 +969,545 @@ export const DeductionsDashboard: React.FC = () => {
             </div>
           </div>
         )
+      ) : activeDashboardTab === 'employees' ? (
+        /* ====================================================== */
+        /* B. TAB 1: EMPLOYEES WITH DEDUCTIONS                    */
+        /* ====================================================== */
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+          {/* Header & Controls */}
+          <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3.5">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900">
+                  Employees with Deductions
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800 font-mono">
+                  {filteredEmployeesWithDeductions.length}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Overview of employees holding active loans and salary deductions. Click any employee to view their individual accounts and payment records.
+              </p>
+            </div>
+          </div>
+
+          {/* Search & Filters Strip */}
+          <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            {/* Search Input */}
+            <div className="relative flex-1 max-w-sm">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                placeholder="Search employee name, number, or department..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-medium placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* Filters */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Type Filter */}
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-slate-500 text-[11px] font-semibold">Type:</span>
+                <select
+                  value={selectedTypeFilter}
+                  onChange={e => setSelectedTypeFilter(e.target.value)}
+                  className="px-2.5 py-1 border border-slate-300 rounded-lg text-xs font-semibold bg-white focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
+                >
+                  <option value="ALL">All Types</option>
+                  <option value="Loan">Loans Only</option>
+                  <option value="Salary Deduction">Salary Deductions Only</option>
+                  <option value="MLS">MLS Only</option>
+                  <option value="Others">Others Only</option>
+                </select>
+              </div>
+
+              {/* Status Filter */}
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-slate-500 text-[11px] font-semibold">Status:</span>
+                <select
+                  value={selectedStatusFilter}
+                  onChange={e => setSelectedStatusFilter(e.target.value)}
+                  className="px-2.5 py-1 border border-slate-300 rounded-lg text-xs font-semibold bg-white focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
+                >
+                  <option value="ALL">All Statuses</option>
+                  <option value="ACTIVE">With Remaining Balance</option>
+                  <option value="COMPLETED">Fully Settled</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Employees List Table */}
+          {filteredEmployeesWithDeductions.length === 0 ? (
+            <div className="p-12 text-center space-y-3">
+              <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mx-auto">
+                <Receipt className="w-6 h-6" />
+              </div>
+              <h3 className="text-sm font-bold text-slate-800">No Employee Deductions Found</h3>
+              <p className="text-xs text-slate-500 max-w-md mx-auto">
+                {searchQuery || selectedTypeFilter !== 'ALL' || selectedStatusFilter !== 'ALL'
+                  ? 'No employees match the selected search or filter criteria.'
+                  : 'No employees currently have registered loans or salary deductions. Click "+ New Deduction" to grant a loan or create a salary deduction.'}
+              </p>
+              <button
+                onClick={() => handleOpenAdd()}
+                className="mt-2 inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Create Deduction</span>
+              </button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-slate-100/80 text-[11px] uppercase font-bold text-slate-600 border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-4">Employee</th>
+                    <th className="py-3 px-3">Deduction Accounts</th>
+                    <th className="py-3 px-3 text-right">Total Obligation</th>
+                    <th className="py-3 px-3 text-right">Total Paid</th>
+                    <th className="py-3 px-3 text-right bg-blue-50/50">Running Balance</th>
+                    <th className="py-3 px-3 text-right">Cutoff Amort.</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200/80">
+                  {filteredEmployeesWithDeductions.map((row) => (
+                    <tr
+                      key={row.employeeId}
+                      onClick={() => setSelectedEmployeeId(row.employeeId)}
+                      className="hover:bg-blue-50/40 transition-colors cursor-pointer group"
+                    >
+                      {/* Employee Column */}
+                      <td className="py-3 px-4 whitespace-nowrap">
+                        <div className="flex items-center gap-2.5">
+                          {row.avatarUrl ? (
+                            <img
+                              src={row.avatarUrl}
+                              alt={row.employeeName}
+                              className="w-8 h-8 rounded-full object-cover border border-slate-200 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 font-bold flex items-center justify-center text-xs shrink-0">
+                              {row.employeeName.charAt(0)}
+                            </div>
+                          )}
+                          <div>
+                            <div className="font-bold text-slate-900 group-hover:text-blue-600 transition-colors">
+                              {row.employeeName}
+                            </div>
+                            <div className="font-mono text-[11px] text-slate-500">
+                              {row.employeeNumber}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+
+
+                      {/* Deduction Accounts Pills */}
+                      <td className="py-3 px-3">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-mono font-bold text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">
+                            {row.totalDeductionsCount} {row.totalDeductionsCount === 1 ? 'account' : 'accounts'}
+                          </span>
+                          {row.deductions.map((d) => (
+                            <span
+                              key={d.id}
+                              className={`text-[10px] px-1.5 py-0.2 rounded font-semibold whitespace-nowrap ${
+                                d.type === 'Loan'
+                                  ? 'bg-purple-100 text-purple-800'
+                                  : d.type === 'Salary Deduction'
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : d.type === 'MLS'
+                                  ? 'bg-indigo-100 text-indigo-800'
+                                  : 'bg-slate-100 text-slate-700'
+                              }`}
+                              title={`${d.deductionId}: ${d.description}`}
+                            >
+                              {d.type}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+
+                      {/* Total Obligation */}
+                      <td className="py-3 px-3 text-right font-mono font-semibold text-slate-900 whitespace-nowrap">
+                        ₱{row.totalOriginalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+
+                      {/* Total Paid */}
+                      <td className="py-3 px-3 text-right font-mono text-emerald-700 font-semibold whitespace-nowrap">
+                        ₱{row.totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+
+                      {/* Running Balance */}
+                      <td className="py-3 px-3 text-right font-mono font-black text-slate-900 bg-blue-50/50 whitespace-nowrap">
+                        <span className={row.totalRunningBalance > 0 ? 'text-blue-950 font-black' : 'text-slate-400'}>
+                          ₱{row.totalRunningBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </span>
+                      </td>
+
+                      {/* Cutoff Amortization */}
+                      <td className="py-3 px-3 text-right font-mono font-bold text-blue-700 whitespace-nowrap">
+                        {row.totalCutoffDeductionAmount > 0 ? (
+                          <span>₱{row.totalCutoffDeductionAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })} / wk</span>
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
+                      </td>
+
+
+                      {/* Actions */}
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedEmployeeId(row.employeeId);
+                              setSelectedDeductionForRecords(row.deductions[0] || null);
+                              setIsPaymentRecordsModalOpen(true);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200/80 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                            title="Open Payment Records Modal"
+                          >
+                            <Receipt className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Payment Records</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedEmployeeId(row.employeeId);
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 hover:bg-blue-600 hover:text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                            title="View Deductions"
+                          >
+                            <span>View</span>
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : activeDashboardTab === 'summary' ? (
+        /* ====================================================== */
+        /* C. TAB 2: PAYMENT SUMMARY TAB (NEW)                    */
+        /* ====================================================== */
+        <PaymentSummaryTab />
+      ) : (
+        /* ====================================================== */
+        /* D. TAB 3: DEDUCTION HISTORY TAB                        */
+        /* ====================================================== */
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+          {/* Header & Controls */}
+          <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3.5">
+            <div>
+              <div className="flex items-center gap-2">
+                <History className="w-5 h-5 text-blue-600" />
+                <h2 className="text-base font-bold text-slate-900">
+                  Deduction History Log
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800 font-mono">
+                  {filteredHistoryEntries.length} entries
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Audit trail and historical log of previously processed employee deductions, weekly cutoff amortizations, and settled loans.
+              </p>
+            </div>
+
+            {/* Quick Metrics Bar inside History */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 text-xs">
+                <span className="text-[10px] text-slate-500 uppercase font-bold block">Total Deducted</span>
+                <span className="font-mono font-bold text-slate-900">
+                  ₱{historyStats.totalAmountProcessed.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+              <div className="bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200 text-xs">
+                <span className="text-[10px] text-emerald-700 uppercase font-bold block">Completed Accounts</span>
+                <span className="font-mono font-bold text-emerald-800">
+                  {historyStats.completedDeductionsCount} settled
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Search & Filters Strip */}
+          <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            {/* Search Input */}
+            <div className="relative flex-1 max-w-sm">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                placeholder="Search by employee, deduction code, reference, or description..."
+                value={historySearchQuery}
+                onChange={e => setHistorySearchQuery(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-medium placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* Filters */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Type Filter */}
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-slate-500 text-[11px] font-semibold">Type:</span>
+                <select
+                  value={historyTypeFilter}
+                  onChange={e => setHistoryTypeFilter(e.target.value)}
+                  className="px-2.5 py-1 border border-slate-300 rounded-lg text-xs font-semibold bg-white focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
+                >
+                  <option value="ALL">All Types</option>
+                  <option value="Loan">Loans Only</option>
+                  <option value="Salary Deduction">Salary Deductions Only</option>
+                  <option value="MLS">MLS Only</option>
+                  <option value="Others">Others Only</option>
+                </select>
+              </div>
+
+              {/* Status Filter */}
+              <div className="flex items-center gap-1 text-xs">
+                <span className="text-slate-500 text-[11px] font-semibold">Status:</span>
+                <select
+                  value={historyStatusFilter}
+                  onChange={e => setHistoryStatusFilter(e.target.value)}
+                  className="px-2.5 py-1 border border-slate-300 rounded-lg text-xs font-semibold bg-white focus:ring-1 focus:ring-blue-500 focus:outline-hidden"
+                >
+                  <option value="ALL">All Statuses</option>
+                  <option value="Active">Active / In Progress</option>
+                  <option value="Completed">Completed / Settled</option>
+                  <option value="Paused">Paused</option>
+                </select>
+              </div>
+
+              {/* Reset filter button if active */}
+              {(historySearchQuery || historyTypeFilter !== 'ALL' || historyStatusFilter !== 'ALL') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHistorySearchQuery('');
+                    setHistoryTypeFilter('ALL');
+                    setHistoryStatusFilter('ALL');
+                  }}
+                  className="text-xs text-blue-600 hover:text-blue-800 font-semibold underline px-1"
+                >
+                  Clear Filters
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* History Log Table */}
+          {filteredHistoryEntries.length === 0 ? (
+            <div className="p-12 text-center space-y-3">
+              <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mx-auto">
+                <History className="w-6 h-6" />
+              </div>
+              <h3 className="text-sm font-bold text-slate-800">No Deduction History Found</h3>
+              <p className="text-xs text-slate-500 max-w-md mx-auto">
+                {historySearchQuery || historyTypeFilter !== 'ALL' || historyStatusFilter !== 'ALL'
+                  ? 'No deduction history logs match your search and filter criteria.'
+                  : 'No deductions have been processed yet. Process weekly cutoffs or record deduction payments to populate this history log.'}
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-slate-100/80 text-[11px] uppercase font-bold text-slate-600 border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-4">Date Processed</th>
+                    <th className="py-3 px-3">Employee</th>
+                    <th className="py-3 px-3">Deduction ID & Description</th>
+                    <th className="py-3 px-3">Type</th>
+                    <th className="py-3 px-3 text-right">Amount Deducted</th>
+                    <th className="py-3 px-3 text-right bg-blue-50/50">Balance After</th>
+                    <th className="py-3 px-3">Reference / Payslip</th>
+                    <th className="py-3 px-3 text-center">Status</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200/80">
+                  {filteredHistoryEntries.map((item, idx) => (
+                    <tr
+                      key={`${item.id}-${idx}`}
+                      className="hover:bg-slate-50/70 transition-colors"
+                    >
+                      {/* Date Processed */}
+                      <td className="py-3 px-4 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="font-mono font-medium text-slate-800">
+                            {item.date}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 block font-mono">
+                          {item.transactionType === 'CUTOFF_DEDUCTION' ? 'Payroll Cutoff' : 'Manual Payment'}
+                        </span>
+                      </td>
+
+                      {/* Employee */}
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          {item.avatarUrl ? (
+                            <img
+                              src={item.avatarUrl}
+                              alt={item.employeeName}
+                              className="w-7 h-7 rounded-full object-cover border border-slate-200 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-7 h-7 rounded-full bg-slate-200 text-slate-600 font-bold flex items-center justify-center text-[11px] shrink-0">
+                              {item.employeeName.charAt(0)}
+                            </div>
+                          )}
+                          <div>
+                            <div className="font-bold text-slate-900 hover:text-blue-600 transition-colors cursor-pointer"
+                              onClick={() => setSelectedEmployeeId(item.employeeId)}
+                            >
+                              {item.employeeName}
+                            </div>
+                            <div className="font-mono text-[10px] text-slate-500">
+                              {item.employeeNumber} • {item.department}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Deduction ID & Description */}
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        <div className="font-mono font-bold text-slate-800">
+                          {item.deductionCode}
+                        </div>
+                        <div className="text-slate-600 text-[11px] font-medium truncate max-w-[200px]" title={item.deductionTitle}>
+                          {item.deductionTitle}
+                        </div>
+                      </td>
+
+                      {/* Type */}
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded font-bold border ${
+                            item.type === 'Loan'
+                              ? 'bg-purple-50 text-purple-700 border-purple-200'
+                              : item.type === 'Salary Deduction'
+                              ? 'bg-amber-50 text-amber-700 border-amber-200'
+                              : item.type === 'MLS'
+                              ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                              : 'bg-slate-50 text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          {item.type}
+                        </span>
+                      </td>
+
+                      {/* Amount Deducted */}
+                      <td className="py-3 px-3 text-right font-mono font-bold text-slate-900 whitespace-nowrap">
+                        <span className="text-emerald-700">
+                          -₱{item.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </span>
+                      </td>
+
+                      {/* Balance After */}
+                      <td className="py-3 px-3 text-right font-mono font-black text-slate-900 bg-blue-50/50 whitespace-nowrap">
+                        <span className={item.runningBalance > 0 ? 'text-blue-950 font-black' : 'text-slate-400'}>
+                          ₱{item.runningBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </span>
+                      </td>
+
+                      {/* Reference & Payslip / 13th Month Link */}
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-mono text-[11px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                            {item.reference}
+                          </span>
+
+                          {item.payslipId && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenPayslip(item.payslipId, item)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 hover:bg-blue-600 text-blue-700 hover:text-white border border-blue-200 hover:border-blue-600 rounded text-[11px] font-bold transition-all shadow-2xs group cursor-pointer"
+                              title="Inspect connected payslip"
+                            >
+                              <FileText className="w-3 h-3 text-blue-600 group-hover:text-white transition-colors" />
+                              <span>View Payslip</span>
+                            </button>
+                          )}
+
+                          {item.thirteenthMonthYear && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenThirteenthMonth(item.thirteenthMonthYear, item.employeeId)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 hover:bg-amber-600 text-amber-800 hover:text-white border border-amber-300 hover:border-amber-600 rounded text-[11px] font-bold transition-all shadow-2xs group cursor-pointer"
+                              title={`Inspect connected 13th month voucher (${item.thirteenthMonthYear})`}
+                            >
+                              <Gift className="w-3 h-3 text-amber-600 group-hover:text-white transition-colors" />
+                              <span>View 13th Month</span>
+                            </button>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Status */}
+                      <td className="py-3 px-3 text-center whitespace-nowrap">
+                        {item.status === 'Completed' || item.runningBalance <= 0 ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            <CheckCheck className="w-3 h-3 text-emerald-600" />
+                            Completed
+                          </span>
+                        ) : item.status === 'Paused' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                            Paused
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                            Active
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Actions */}
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenPaymentRecords(item.rawDeduction)}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200/80 rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                            title="Open full payment records for this deduction"
+                          >
+                            <Receipt className="w-3 h-3 text-emerald-600" />
+                            <span>Payment Records</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setSelectedEmployeeId(item.employeeId)}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 hover:bg-blue-600 hover:text-white rounded-lg text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                            title="View Employee Deductions"
+                          >
+                            <span>View</span>
+                            <ChevronRight className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ======================================================== */}
-      {/* 3. MODALS                                                */}
+      {/* 4. MODALS                                                */}
       {/* ======================================================== */}
 
       {/* Add / Edit Deduction Modal */}
@@ -822,18 +1533,68 @@ export const DeductionsDashboard: React.FC = () => {
         />
       )}
 
-      {/* Payment Records Modal (Replaces View Ledger with Table matching screenshot & Payslip Modal Linkage) */}
+      {/* Payment Records Modal */}
       <PaymentRecordsModal
         isOpen={isPaymentRecordsModalOpen}
         onClose={() => {
           setIsPaymentRecordsModalOpen(false);
           setSelectedDeductionForRecords(null);
         }}
-        employee={viewingEmployeeData?.employee || null}
+        employee={
+          selectedDeductionForRecords
+            ? employees.find(e => e.id === selectedDeductionForRecords.employeeId) || null
+            : viewingEmployeeData?.employee || null
+        }
         deduction={selectedDeductionForRecords}
-        allEmployeeDeductions={viewingEmployeeData?.deductions || []}
+        allEmployeeDeductions={
+          selectedDeductionForRecords
+            ? employeeDeductions.filter(d => d.employeeId === selectedDeductionForRecords.employeeId)
+            : viewingEmployeeData?.deductions || []
+        }
         onSelectDeduction={(ded) => setSelectedDeductionForRecords(ded)}
       />
+
+      {/* Adjust Principal Modal */}
+      {isAdjustPrincipalOpen && (
+        <AdjustPrincipalModal
+          isOpen={isAdjustPrincipalOpen}
+          onClose={() => setIsAdjustPrincipalOpen(false)}
+          deductions={
+            viewingEmployeeData
+              ? viewingEmployeeData.deductions
+              : employeeDeductions
+          }
+          preselectedDeductionId={preselectedDeductionForAdjustment}
+          employeeName={
+            viewingEmployeeData?.employee
+              ? `${viewingEmployeeData.employee.firstName} ${viewingEmployeeData.employee.lastName}`
+              : undefined
+          }
+        />
+      )}
+
+      {/* Payslip Modal (linked from history view or payment records) */}
+      {viewingPayslip && (
+        <PayslipModal
+          isOpen={isPayslipModalOpen}
+          payslip={viewingPayslip}
+          onClose={() => {
+            setIsPayslipModalOpen(false);
+            setViewingPayslip(null);
+          }}
+        />
+      )}
+
+      {/* 13th Month Voucher Modal (linked from history view or payment records) */}
+      {viewingThirteenthMonth && (
+        <ThirteenthMonthVoucherModal
+          isOpen={!!viewingThirteenthMonth}
+          onClose={() => setViewingThirteenthMonth(null)}
+          item={viewingThirteenthMonth.item}
+          record={viewingThirteenthMonth.record}
+          year={viewingThirteenthMonth.year}
+        />
+      )}
     </div>
   );
 };

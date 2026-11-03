@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Payslip, DayType, DTRRecord, DTRPunchPair, DTRStatus } from '../../types';
+import { Payslip, DayType, DTRRecord, DTRPunchPair, DTRStatus, EmployeeDeduction, PayslipItem } from '../../types';
 import { formatCurrency } from '../../utils/formatters';
 import { calculateCutoffContributions, calculateMonthlySSS } from '../../utils/calculations';
 import { ConfirmDialog } from '../common/ConfirmDialog';
@@ -386,7 +386,20 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
   payslip,
   onClose,
 }) => {
-  const { updatePayslip, deletePayslip, isAdmin, isManager, payslips, payPeriods, dtrRecords, employees, batchUpdateDTRRecords, companyProfile, getEmployeeShift } = useApp();
+  const {
+    updatePayslip,
+    deletePayslip,
+    isAdmin,
+    isManager,
+    payslips,
+    payPeriods,
+    dtrRecords,
+    employees,
+    batchUpdateDTRRecords,
+    companyProfile,
+    getEmployeeShift,
+    employeeDeductions,
+  } = useApp();
   const employee = useMemo(() => {
     if (!payslip) return null;
     return employees.find(e => e.id === payslip.employeeId) || null;
@@ -394,6 +407,14 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
   const employeeShift = useMemo(() => {
     return employee ? getEmployeeShift(employee) : null;
   }, [employee, getEmployeeShift]);
+
+  // Active deductions belonging to this employee
+  const activeEmployeeDeductions: EmployeeDeduction[] = useMemo(() => {
+    if (!payslip) return [];
+    return employeeDeductions.filter(
+      d => d.employeeId === payslip.employeeId && d.status === 'Active' && d.runningBalance > 0
+    );
+  }, [payslip, employeeDeductions]);
 
   // Active Tab: Payslip vs Attendance
   const [activeTab, setActiveTab] = useState<'Payslip' | 'Attendance'>('Payslip');
@@ -423,9 +444,11 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
   const [philhealthDeduction, setPhilhealthDeduction] = useState<number>(0);
   const [pagibigDeduction, setPagibigDeduction] = useState<number>(0);
   const [withholdingTax, setWithholdingTax] = useState<number>(0);
-  const [mlsDeduction, setMlsDeduction] = useState<number>(0);
   const [cashAdvanceDeduction, setCashAdvanceDeduction] = useState<number>(0);
   const [otherDeduction, setOtherDeduction] = useState<number>(0);
+
+  // Active employee deduction amounts for this cutoff (deduction.id -> amount)
+  const [activeDeductionAmounts, setActiveDeductionAmounts] = useState<Record<string, number>>({});
 
   // SSS Breakdown accordion toggle
   const [showSssBreakdown, setShowSssBreakdown] = useState<boolean>(false);
@@ -524,9 +547,38 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
       setPhilhealthDeduction(payslip.philhealthDeduction ?? 0);
       setPagibigDeduction(payslip.pagibigDeduction ?? 0);
       setWithholdingTax(companyProfile.enableWithholdingTax ? (payslip.withholdingTax ?? 0) : 0);
-      setMlsDeduction(payslip.mlsDeduction ?? 0);
       setCashAdvanceDeduction(payslip.cashAdvanceDeduction ?? (currentEmp?.cashAdvanceDeduction ?? 0));
-      setOtherDeduction(payslip.totalOtherDeductions ?? 0);
+
+      // Initialize active employee deductions and other / misc loan
+      const activeAmounts: Record<string, number> = {};
+      const matchedNames = new Set<string>();
+
+      activeEmployeeDeductions.forEach(ded => {
+        // Look for corresponding entry in payslip.otherDeductions
+        const matched = payslip.otherDeductions?.find(od =>
+          od.name.includes(ded.deductionId) ||
+          (ded.description && od.name.toLowerCase().includes(ded.description.toLowerCase()))
+        );
+
+        if (matched) {
+          activeAmounts[ded.id] = matched.amount;
+          matchedNames.add(matched.name);
+        } else {
+          // Default to scheduled cutoff amount (capped at running balance)
+          activeAmounts[ded.id] = Math.min(ded.cutoffDeductionAmount, ded.runningBalance);
+        }
+      });
+
+      setActiveDeductionAmounts(activeAmounts);
+
+      // Remaining unmatched otherDeductions go to generic Other / Misc Loan
+      if (payslip.otherDeductions && payslip.otherDeductions.length > 0) {
+        const unmatched = payslip.otherDeductions.filter(od => !matchedNames.has(od.name));
+        const unmatchedSum = unmatched.reduce((acc, curr) => acc + curr.amount, 0);
+        setOtherDeduction(unmatchedSum);
+      } else {
+        setOtherDeduction(0);
+      }
 
       setEditReason('');
       setActiveTab('Payslip');
@@ -653,7 +705,7 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
         }
       }
     }
-  }, [payslip, isOpen, currentPeriod, currentEmp, dtrRecords]);
+  }, [payslip, isOpen, currentPeriod, currentEmp, dtrRecords, activeEmployeeDeductions]);
 
   // Selected Day item for Attendance tab
   const activeDayItem = dailyAttendance.find(d => d.date === selectedDateStr) || dailyAttendance[0];
@@ -1084,6 +1136,16 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
     setLateUndertimeDeduction(newDeduction);
   };
 
+  // Sum of active deductions for this employee (respecting user edits / clearances)
+  const totalActiveDeductions = useMemo(() => {
+    return activeEmployeeDeductions.reduce((sum, ded) => {
+      const val = activeDeductionAmounts[ded.id] !== undefined
+        ? activeDeductionAmounts[ded.id]
+        : Math.min(ded.cutoffDeductionAmount, ded.runningBalance);
+      return sum + (Number(val) || 0);
+    }, 0);
+  }, [activeEmployeeDeductions, activeDeductionAmounts]);
+
   // Live Totals
   const currentGross =
     Math.round(
@@ -1103,9 +1165,9 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
         Number(philhealthDeduction) +
         Number(pagibigDeduction) +
         (companyProfile.enableWithholdingTax ? (Number(withholdingTax) || 0) : 0) +
-        Number(mlsDeduction) +
         Number(cashAdvanceDeduction) +
-        Number(otherDeduction)) *
+        Number(otherDeduction) +
+        Number(totalActiveDeductions)) *
         100
     ) / 100;
 
@@ -1187,18 +1249,43 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
         philhealthEmployerShare: calcResult.philhealth.employerShare,
         pagibigEmployerShare: calcResult.pagibig.employerShare,
         withholdingTax: companyProfile.enableWithholdingTax ? (Number(withholdingTax) || 0) : 0,
-        mlsDeduction: Number(mlsDeduction) || 0,
         cashAdvanceDeduction: Number(cashAdvanceDeduction) || 0,
         totalAllowances: Number(allowanceBonus) || 0,
-        totalOtherDeductions: Number(otherDeduction) || 0,
+        totalOtherDeductions: (() => {
+          let sum = Number(otherDeduction) || 0;
+          activeEmployeeDeductions.forEach(ded => {
+            const val = activeDeductionAmounts[ded.id] !== undefined
+              ? activeDeductionAmounts[ded.id]
+              : Math.min(ded.cutoffDeductionAmount, ded.runningBalance);
+            sum += Number(val) || 0;
+          });
+          return Math.round(sum * 100) / 100;
+        })(),
         allowances:
           allowanceBonus > 0
             ? [{ name: 'Allowances / Bonus Incentive', amount: Number(allowanceBonus) || 0 }]
             : [],
-        otherDeductions:
-          otherDeduction > 0
-            ? [{ name: 'Adjustments / Other Loan', amount: Number(otherDeduction) || 0 }]
-            : [],
+        otherDeductions: (() => {
+          const items: PayslipItem[] = [];
+          if (Number(otherDeduction) > 0) {
+            items.push({
+              name: 'Other / Misc Loan',
+              amount: Number(otherDeduction) || 0,
+            });
+          }
+          activeEmployeeDeductions.forEach(ded => {
+            const val = activeDeductionAmounts[ded.id] !== undefined
+              ? activeDeductionAmounts[ded.id]
+              : Math.min(ded.cutoffDeductionAmount, ded.runningBalance);
+            if (val > 0) {
+              items.push({
+                name: `${ded.type === 'Loan' ? 'Loan' : ded.type}: ${ded.description} (${ded.deductionId})`,
+                amount: Math.round(val * 100) / 100,
+              });
+            }
+          });
+          return items;
+        })(),
       },
       editReason.trim() || undefined
     );
@@ -1880,22 +1967,6 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
                         </div>
                       )}
 
-                      {/* MLS Deduction */}
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <label className="font-semibold text-slate-700 w-1/2">MLS Deduction</label>
-                        <div className="relative w-1/2">
-                          <span className="absolute left-2.5 top-1.5 text-xs font-bold text-slate-400">₱</span>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={mlsDeduction}
-                            onChange={e => setMlsDeduction(parseFloat(e.target.value) || 0)}
-                            className="w-full pl-6 pr-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono text-xs font-semibold text-rose-700 focus:ring-2 focus:ring-indigo-500"
-                            id="adjustment-mls-deduction-input"
-                          />
-                        </div>
-                      </div>
-
                       {/* Cash Advance (Vale) */}
                       <div className="flex items-center justify-between gap-2 text-xs bg-amber-50/70 p-1.5 rounded-lg border border-amber-200/80">
                         <div className="w-1/2">
@@ -1930,6 +2001,158 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
                           />
                         </div>
                       </div>
+
+                      {/* Active Employee Deductions (After Other / Misc Loan) */}
+                      {activeEmployeeDeductions.length > 0 && (
+                        <div className="pt-2.5 mt-2.5 border-t border-slate-200 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                              <span>Active Deductions</span>
+                              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 font-mono">
+                                {activeEmployeeDeductions.length}
+                              </span>
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              Cutoff scheduled amortization
+                            </span>
+                          </div>
+
+                          {activeEmployeeDeductions.map(ded => {
+                            const currentVal = activeDeductionAmounts[ded.id] !== undefined
+                              ? activeDeductionAmounts[ded.id]
+                              : Math.min(ded.cutoffDeductionAmount, ded.runningBalance);
+                            const isCleared = currentVal === 0;
+                            const scheduledCutoff = Math.min(ded.cutoffDeductionAmount, ded.runningBalance);
+
+                            return (
+                              <div
+                                key={ded.id}
+                                className={`p-2 rounded-xl border transition-all ${
+                                  isCleared
+                                    ? 'bg-slate-50 border-slate-200 text-slate-400'
+                                    : 'bg-blue-50/40 border-blue-200/80 text-slate-800'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2 text-xs">
+                                  <div className="w-1/2 min-w-0 pr-1">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <label
+                                        htmlFor={`adjustment-deduction-${ded.id}-input`}
+                                        className={`font-bold truncate text-xs cursor-pointer ${
+                                          isCleared ? 'text-slate-500 line-through' : 'text-slate-900'
+                                        }`}
+                                        title={ded.description}
+                                      >
+                                        {ded.description || ded.type}
+                                      </label>
+                                      <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-white/90 border border-slate-200 text-slate-600 font-bold shrink-0">
+                                        {ded.deductionId}
+                                      </span>
+                                      <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold shrink-0 ${
+                                        ded.type === 'Loan'
+                                          ? 'bg-purple-100 text-purple-700'
+                                          : ded.type === 'Salary Deduction'
+                                          ? 'bg-amber-100 text-amber-800'
+                                          : ded.type === 'MLS'
+                                          ? 'bg-indigo-100 text-indigo-700'
+                                          : 'bg-slate-200 text-slate-700'
+                                      }`}>
+                                        {ded.type}
+                                      </span>
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                                      <span>Bal: <strong className="font-mono text-slate-700">₱{ded.runningBalance.toLocaleString()}</strong></span>
+                                      <span>•</span>
+                                      <span>Cutoff: <strong className="font-mono text-slate-700">₱{scheduledCutoff.toLocaleString()}</strong></span>
+                                    </div>
+                                  </div>
+
+                                  <div className="w-1/2 flex items-center gap-1.5">
+                                    <div className="relative flex-1">
+                                      <span className={`absolute left-2.5 top-1.5 text-xs font-bold ${
+                                        isCleared ? 'text-slate-300' : 'text-blue-500'
+                                      }`}>
+                                        ₱
+                                      </span>
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        max={ded.runningBalance}
+                                        value={currentVal === 0 ? '' : currentVal}
+                                        placeholder="0.00"
+                                        onChange={e => {
+                                          const parsed = parseFloat(e.target.value);
+                                          const val = isNaN(parsed) ? 0 : Math.max(0, parsed);
+                                          setActiveDeductionAmounts(prev => ({
+                                            ...prev,
+                                            [ded.id]: val,
+                                          }));
+                                        }}
+                                        className={`w-full pl-6 pr-2.5 py-1.5 bg-white border rounded-lg font-mono text-xs font-semibold focus:ring-2 focus:ring-indigo-500 ${
+                                          isCleared
+                                            ? 'border-slate-300 text-slate-400 bg-slate-50'
+                                            : 'border-blue-300 text-rose-700 font-bold'
+                                        }`}
+                                        id={`adjustment-deduction-${ded.id}-input`}
+                                      />
+                                    </div>
+
+                                    {/* Clear / Reset button */}
+                                    {isCleared ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setActiveDeductionAmounts(prev => ({
+                                            ...prev,
+                                            [ded.id]: scheduledCutoff,
+                                          }));
+                                        }}
+                                        className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-800 rounded-lg text-[10px] font-bold transition-colors whitespace-nowrap cursor-pointer shrink-0"
+                                        title="Reset to scheduled cutoff amount"
+                                      >
+                                        Reset
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setActiveDeductionAmounts(prev => ({
+                                            ...prev,
+                                            [ded.id]: 0,
+                                          }));
+                                        }}
+                                        className="px-2 py-1 bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 hover:border-rose-200 rounded-lg text-[10px] font-bold transition-colors whitespace-nowrap cursor-pointer shrink-0"
+                                        title="Clear amount (skip deduction for this cutoff)"
+                                      >
+                                        Clear (₱0)
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {isCleared && (
+                                  <div className="mt-1 flex items-center justify-between text-[10px] text-amber-700 bg-amber-50/80 px-2 py-0.5 rounded border border-amber-200/50">
+                                    <span>⚠️ Deduction cleared: will not be deducted on this cutoff</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setActiveDeductionAmounts(prev => ({
+                                          ...prev,
+                                          [ded.id]: scheduledCutoff,
+                                        }));
+                                      }}
+                                      className="underline font-bold hover:text-amber-900 cursor-pointer ml-1"
+                                    >
+                                      Restore ₱{scheduledCutoff.toLocaleString()}
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
 
                     {/* Subtotal Deductions Box */}
@@ -1966,7 +2189,7 @@ export const PayslipEditModal: React.FC<PayslipEditModalProps> = ({
                     type="text"
                     value={editReason}
                     onChange={e => setEditReason(e.target.value)}
-                    placeholder="e.g. Corrected 2 OT hours and adjusted MLS deduction for August..."
+                    placeholder="e.g. Corrected 2 OT hours and adjusted cutoff loan deduction for August..."
                     className="w-full px-3.5 py-2 border border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl text-xs text-slate-800"
                     id="adjustment-reason-input"
                   />
